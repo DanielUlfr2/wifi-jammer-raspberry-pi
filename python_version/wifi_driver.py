@@ -265,7 +265,7 @@ class WiFiDriver:
                 print("Liberando interfaz WiFi...")
                 try:
                     subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
-                                 capture_output=True, timeout=15, stderr=subprocess.DEVNULL)
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
                     time.sleep(1)
                 except (subprocess.TimeoutExpired, Exception):
                     pass
@@ -273,7 +273,7 @@ class WiFiDriver:
                 # PASO 2: Desactivar NetworkManager para esta interfaz
                 try:
                     subprocess.run(['sudo', 'nmcli', 'device', 'set', self.interface, 'managed', 'no'], 
-                                 capture_output=True, timeout=5, stderr=subprocess.DEVNULL)
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
                     time.sleep(0.5)
                 except Exception:
                     pass
@@ -281,7 +281,7 @@ class WiFiDriver:
                 # PASO 3: Bajar la interfaz antes de cambiar modo
                 try:
                     subprocess.run(['sudo', 'ip', 'link', 'set', self.interface, 'down'], 
-                                 capture_output=True, timeout=5, stderr=subprocess.DEVNULL)
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
                     time.sleep(0.5)
                 except Exception:
                     pass
@@ -321,11 +321,11 @@ class WiFiDriver:
                     try:
                         # Cambiar a modo monitor con iw
                         result = subprocess.run(['sudo', 'iw', self.interface, 'set', 'type', 'monitor'], 
-                                              capture_output=True, timeout=10, stderr=subprocess.PIPE)
+                                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
                         if result.returncode == 0:
                             # Subir la interfaz
                             subprocess.run(['sudo', 'ip', 'link', 'set', self.interface, 'up'], 
-                                         capture_output=True, timeout=5)
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
                             self.monitor_interface = self.interface
                         else:
                             error_msg = result.stderr.decode('utf-8', errors='ignore') if result.stderr else ""
