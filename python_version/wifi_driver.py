@@ -534,8 +534,14 @@ class WiFiDriver:
             if not interface:
                 return False
             
+            # Si la interfaz no está en modo monitor, intentar activarlo primero
+            if not self.monitor_mode:
+                if not silent:
+                    print(f"ADVERTENCIA: Modo monitor no activo. Intentando activar...")
+                self.set_monitor_mode(True)
+            
             result = subprocess.run(['sudo', 'iw', 'dev', interface, 'set', 'channel', str(channel)], 
-                                  capture_output=True, timeout=5)
+                                  capture_output=True, timeout=10, stderr=subprocess.PIPE)
             
             if result.returncode == 0:
                 time.sleep(0.1)  # Esperar cambio de canal
@@ -543,8 +549,10 @@ class WiFiDriver:
             else:
                 error_msg = result.stderr.decode('utf-8', errors='ignore') if result.stderr else "Unknown error"
                 if not silent:
-                    # Solo mostrar errores importantes, no los de canales deshabilitados
-                    if "disabled" not in error_msg.lower() and "invalid" not in error_msg.lower():
+                    # Manejar errores específicos
+                    if "Device or resource busy" in error_msg:
+                        print(f"ERROR: Interfaz ocupada. Intenta: sudo airmon-ng check kill")
+                    elif "disabled" not in error_msg.lower() and "invalid" not in error_msg.lower():
                         print(f"ERROR cambiando canal {channel}: {error_msg}")
                 return False
         
