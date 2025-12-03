@@ -995,21 +995,39 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
         print("Use 'help' para lista de comandos o 'status' para estado actual.\n\r")
         print()
         
-        # Configurar stdin para no bloquear (solo en Linux/Unix)
-        if sys.platform != 'win32':
-            try:
-                import fcntl
-                flags = fcntl.fcntl(sys.stdin.fileno(), fcntl.F_GETFL)
-                fcntl.fcntl(sys.stdin.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
-            except (ImportError, AttributeError):
-                pass
+        # Usar threading para entrada de comandos (más robusto)
+        import threading
+        
+        input_queue = queue.Queue()
+        input_active = True
+        
+        def input_thread():
+            """Thread separado para capturar entrada del usuario"""
+            while input_active:
+                try:
+                    # Usar input() normal en thread separado (bloqueante pero funciona mejor)
+                    line = input()
+                    if line:
+                        input_queue.put(line)
+                except (EOFError, KeyboardInterrupt):
+                    input_queue.put(None)
+                    break
+                except Exception:
+                    pass
+        
+        # Iniciar thread de entrada
+        input_thread_obj = threading.Thread(target=input_thread, daemon=True)
+        input_thread_obj.start()
         
         try:
             while True:
-                # Procesar comandos de entrada
+                # Procesar comandos de entrada (no bloqueante)
                 try:
-                    if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
-                        line = sys.stdin.readline()
+                    if not input_queue.empty():
+                        line = input_queue.get_nowait()
+                        if line is None:
+                            break
+                        
                         if line:
                             if self.chat_mode:
                                 # En modo chat, enviar directamente
@@ -1020,9 +1038,11 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
                             else:
                                 # Procesar comando
                                 if self.do_echo:
-                                    print(line, end='', flush=True)
+                                    print(f">>> {line}\r\n", end='', flush=True)
                                 self.exec_command(line.strip())
-                except (IOError, OSError):
+                except queue.Empty:
+                    pass
+                except Exception as e:
                     pass
                 
                 # Procesar WiFi
@@ -1034,6 +1054,7 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
         except KeyboardInterrupt:
             print("\n\r\nInterrupción detectada. Limpiando...")
         finally:
+            input_active = False
             self.cleanup()
 
 
