@@ -763,13 +763,18 @@ class WiFiDriver:
             print(f"ERROR exportando PCAP: {e}")
             return False
     
-    def start_jamming(self, target_bssid: Optional[str] = None, channel: Optional[int] = None, all_bands: bool = False) -> bool:
+    def start_jamming(self, target_bssid: Optional[str] = None, channel: Optional[int] = None, 
+                     jam_mode: str = "channel") -> bool:
         """Inicia jamming WiFi usando aireplay-ng con mejor manejo
         
         Args:
             target_bssid: BSSID objetivo (None = broadcast)
-            channel: Canal específico (None = canal actual)
-            all_bands: Si True, hace jamming en toda la banda cambiando canales
+            channel: Canal específico (None = canal actual, solo para jam_mode="channel")
+            jam_mode: Modo de jamming:
+                - "channel": Canal específico (2.4 o 5 GHz)
+                - "band_2_4": Todos los canales 2.4 GHz (1-14)
+                - "band_5": Todos los canales 5 GHz (36-165)
+                - "all": Todos los canales en ambas bandas (2.4 y 5 GHz)
         """
         # Verificar que aireplay-ng esté disponible
         if not self._check_command_available('aireplay-ng'):
@@ -781,15 +786,7 @@ class WiFiDriver:
             if not interface:
                 return False
             
-            if all_bands:
-                # Jamming de banda completa - usar thread para cambiar canales
-                self.jam_all_bands_active = True
-                self.jam_process = None  # No usamos proceso único
-                self.jam_thread = threading.Thread(target=self._jam_all_bands_loop, 
-                                                   args=(target_bssid,), daemon=True)
-                self.jam_thread.start()
-                return True
-            else:
+            if jam_mode == "channel":
                 # Jamming en canal específico (comportamiento original)
                 if channel:
                     self.set_channel(channel)
@@ -809,6 +806,15 @@ class WiFiDriver:
                     return False
                 
                 return True
+            
+            else:
+                # Jamming en múltiples canales - usar thread para cambiar canales
+                self.jam_all_bands_active = True
+                self.jam_process = None  # No usamos proceso único
+                self.jam_thread = threading.Thread(target=self._jam_multiple_channels_loop, 
+                                                   args=(target_bssid, jam_mode), daemon=True)
+                self.jam_thread.start()
+                return True
         
         except FileNotFoundError:
             print("ERROR: aireplay-ng no encontrado. Instala con: sudo apt install aircrack-ng")
@@ -817,17 +823,24 @@ class WiFiDriver:
             print(f"ERROR iniciando jamming: {e}")
             return False
     
-    def _jam_all_bands_loop(self, target_bssid: Optional[str] = None):
-        """Loop para jamming en toda la banda cambiando canales"""
+    def _jam_multiple_channels_loop(self, target_bssid: Optional[str] = None, jam_mode: str = "all"):
+        """Loop para jamming en múltiples canales cambiando automáticamente"""
         interface = self.monitor_interface or self.interface
         if not interface:
             return
         
-        # Canales a usar (2.4 GHz y 5 GHz)
-        all_channels = self.CHANNELS_2_4 + self.CHANNELS_5
+        # Determinar qué canales usar según el modo
+        if jam_mode == "band_2_4":
+            channels_to_jam = self.CHANNELS_2_4
+        elif jam_mode == "band_5":
+            channels_to_jam = self.CHANNELS_5
+        elif jam_mode == "all":
+            channels_to_jam = self.CHANNELS_2_4 + self.CHANNELS_5
+        else:
+            channels_to_jam = [self.current_channel]  # Fallback
         
         while getattr(self, 'jam_all_bands_active', False):
-            for channel in all_channels:
+            for channel in channels_to_jam:
                 if not getattr(self, 'jam_all_bands_active', False):
                     break
                 
@@ -848,7 +861,11 @@ class WiFiDriver:
                         process.terminate()
                         process.wait(timeout=1)
                     except:
-                        process.kill()
+                        try:
+                            process.kill()
+                            process.wait(timeout=1)
+                        except:
+                            pass
                 
                 except Exception as e:
                     # Continuar con siguiente canal si hay error

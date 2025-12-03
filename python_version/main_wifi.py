@@ -184,11 +184,17 @@ RECEPCIÓN/TRANSMISIÓN:
 ======================
 rx                    : Activar/desactivar recepción de paquetes
 tx <hex-vals>         : Enviar paquete WiFi (hex)
-jam [bssid|all]       : Activar/desactivar jamming WiFi
+jam [opciones]        : Activar/desactivar jamming WiFi
                        - jam: Canal actual
-                       - jam all: Toda la banda (todos los canales)
-                       - jam AA:BB:CC:DD:EE:FF: Red específica
-                       - jam all AA:BB:CC:DD:EE:FF: Red específica en toda la banda
+                       - jam <canal>: Canal específico (ej: jam 6)
+                       - jam 2.4: Todos los canales 2.4 GHz (1-14)
+                       - jam 5: Todos los canales 5 GHz (36-165)
+                       - jam all: Todos los canales (2.4 y 5 GHz)
+                       - jam <bssid>: Red específica en canal actual
+                       - jam <canal> <bssid>: Red específica en canal
+                       - jam 2.4 <bssid>: Red en todos los canales 2.4 GHz
+                       - jam 5 <bssid>: Red en todos los canales 5 GHz
+                       - jam all <bssid>: Red en todos los canales
 chat                  : Modo chat (envío/recepción de texto)
 
 GRABACIÓN:
@@ -376,30 +382,68 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
                     if not self.wifi.monitor_mode:
                         self.wifi.set_monitor_mode(True)
                     
-                    # Verificar si quiere jamming de toda la banda
-                    all_bands = False
+                    # Parsear argumentos
+                    jam_mode = "channel"  # Por defecto: canal actual
                     bssid = None
+                    channel = None
                     
                     if args:
                         args_lower = args.strip().lower()
-                        if args_lower in ['all', 'band', 'full', 'todos']:
-                            all_bands = True
-                        elif len(args.strip()) == 17:
-                            # Es un BSSID
-                            bssid = args.strip()
-                        elif args_lower.startswith('all ') or args_lower.startswith('band '):
-                            # "all BSSID" o "band BSSID"
-                            parts = args.strip().split(None, 1)
-                            all_bands = True
-                            if len(parts) > 1 and len(parts[1]) == 17:
-                                bssid = parts[1]
+                        parts = args.strip().split()
+                        
+                        # Detectar modo de jamming
+                        if args_lower in ['all', 'full', 'todos', 'both']:
+                            jam_mode = "all"
+                        elif args_lower in ['2.4', '2.4ghz', 'band2.4', 'band_2_4']:
+                            jam_mode = "band_2_4"
+                        elif args_lower in ['5', '5ghz', 'band5', 'band_5']:
+                            jam_mode = "band_5"
+                        elif len(parts) > 0:
+                            # Verificar si el primer argumento es un modo
+                            first_arg = parts[0].lower()
+                            if first_arg in ['all', 'full', 'todos', 'both']:
+                                jam_mode = "all"
+                                if len(parts) > 1:
+                                    if len(parts[1]) == 17:
+                                        bssid = parts[1]
+                            elif first_arg in ['2.4', '2.4ghz', 'band2.4', 'band_2_4']:
+                                jam_mode = "band_2_4"
+                                if len(parts) > 1:
+                                    if len(parts[1]) == 17:
+                                        bssid = parts[1]
+                            elif first_arg in ['5', '5ghz', 'band5', 'band_5']:
+                                jam_mode = "band_5"
+                                if len(parts) > 1:
+                                    if len(parts[1]) == 17:
+                                        bssid = parts[1]
+                            elif len(parts[0]) == 17:
+                                # Es un BSSID directamente
+                                bssid = parts[0]
+                            elif parts[0].isdigit():
+                                # Es un canal específico
+                                channel = int(parts[0])
+                                jam_mode = "channel"
+                                if len(parts) > 1 and len(parts[1]) == 17:
+                                    bssid = parts[1]
                     
-                    self.wifi.start_jamming(target_bssid=bssid, channel=self.wifi.current_channel, all_bands=all_bands)
+                    # Si no se especificó canal y el modo es "channel", usar canal actual
+                    if jam_mode == "channel" and channel is None:
+                        channel = self.wifi.current_channel
                     
-                    if all_bands:
-                        print(f"\r\nJamming: ACTIVADO en TODA LA BANDA (BSSID: {bssid or 'Broadcast'})\r\n")
+                    # Iniciar jamming
+                    success = self.wifi.start_jamming(target_bssid=bssid, channel=channel, jam_mode=jam_mode)
+                    
+                    if success:
+                        mode_desc = {
+                            "channel": f"Canal {channel}",
+                            "band_2_4": "Banda 2.4 GHz (canales 1-14)",
+                            "band_5": "Banda 5 GHz (canales 36-165)",
+                            "all": "Todas las bandas (2.4 y 5 GHz)"
+                        }
+                        print(f"\r\nJamming: ACTIVADO en {mode_desc[jam_mode]} (BSSID: {bssid or 'Broadcast'})\r\n")
                     else:
-                        print(f"\r\nJamming: ACTIVADO (BSSID: {bssid or 'Broadcast'}, Canal: {self.wifi.current_channel})\r\n")
+                        self.jamming_mode = False
+                        print("\r\nError activando jamming.\r\n")
             
             elif command == "rec":
                 if self.recording_mode:
