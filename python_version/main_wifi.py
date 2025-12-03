@@ -239,7 +239,10 @@ help                  : Mostrar esta ayuda
 
 COMANDOS ABREVIADOS:
 ====================
-s, t, r, j, c, st, h, q, x, w, f, e
+s, t, r, j, j24, j5, ja, c, st, h, q, x, w, f, e
+  - j24: jam 2.4 (banda 2.4 GHz)
+  - j5: jam 5 (banda 5 GHz)
+  - ja: jam all (todas las bandas)
 
 NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamente.
 """
