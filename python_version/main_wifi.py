@@ -32,6 +32,9 @@ COMMAND_ABBREVIATIONS = {
     't': 'tx',
     'r': 'rx',
     'j': 'jam',
+    'j24': 'jam 2.4',
+    'j5': 'jam 5',
+    'ja': 'jam all',
     'c': 'chat',
     'st': 'status',
     'h': 'help',
@@ -254,6 +257,9 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
         # Expandir abreviatura
         if cmd in COMMAND_ABBREVIATIONS:
             full_cmd = COMMAND_ABBREVIATIONS[cmd]
+            # Si el comando expandido ya tiene argumentos, no agregar args adicionales
+            if ' ' in full_cmd:
+                return full_cmd
             return f"{full_cmd} {args}".strip()
         
         return cmdline
