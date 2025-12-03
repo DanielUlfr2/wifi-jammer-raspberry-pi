@@ -509,11 +509,17 @@ class WiFiDriver:
         
         return True
     
-    def set_channel(self, channel: int) -> bool:
-        """Establece el canal WiFi con validación"""
+    def set_channel(self, channel: int, silent: bool = False) -> bool:
+        """Establece el canal WiFi con validación
+        
+        Args:
+            channel: Canal a establecer
+            silent: Si True, no imprime errores (útil para loops)
+        """
         # Validar canal
         if channel not in self.CHANNELS_2_4 and channel not in self.CHANNELS_5:
-            print(f"ERROR: Canal {channel} no válido. Use 1-14 para 2.4GHz o 36-165 para 5GHz")
+            if not silent:
+                print(f"ERROR: Canal {channel} no válido. Use 1-14 para 2.4GHz o 36-165 para 5GHz")
             return False
         
         if channel in self.CHANNELS_2_4:
@@ -536,14 +542,19 @@ class WiFiDriver:
                 return True
             else:
                 error_msg = result.stderr.decode('utf-8', errors='ignore') if result.stderr else "Unknown error"
-                print(f"ERROR cambiando canal: {error_msg}")
+                if not silent:
+                    # Solo mostrar errores importantes, no los de canales deshabilitados
+                    if "disabled" not in error_msg.lower() and "invalid" not in error_msg.lower():
+                        print(f"ERROR cambiando canal {channel}: {error_msg}")
                 return False
         
         except subprocess.TimeoutExpired:
-            print("ERROR: Timeout cambiando canal")
+            if not silent:
+                print("ERROR: Timeout cambiando canal")
             return False
         except Exception as e:
-            print(f"ERROR cambiando canal: {e}")
+            if not silent:
+                print(f"ERROR cambiando canal: {e}")
             return False
     
     def set_filter_bssid(self, bssid: Optional[str]):
@@ -839,14 +850,26 @@ class WiFiDriver:
         else:
             channels_to_jam = [self.current_channel]  # Fallback
         
+        # Filtrar canales problemáticos comunes (DFS, deshabilitados)
+        # Canales 5 GHz que requieren DFS y pueden estar deshabilitados
+        problematic_channels = [52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144]
+        
         while getattr(self, 'jam_all_bands_active', False):
             for channel in channels_to_jam:
                 if not getattr(self, 'jam_all_bands_active', False):
                     break
                 
+                # Saltar canales problemáticos si fallan
+                if channel in problematic_channels:
+                    # Intentar cambiar, pero si falla, saltar silenciosamente
+                    if not self.set_channel(channel, silent=True):
+                        continue
+                else:
+                    # Para otros canales, intentar cambiar
+                    if not self.set_channel(channel, silent=True):
+                        continue
+                
                 try:
-                    # Cambiar a canal
-                    self.set_channel(channel)
                     time.sleep(0.1)  # Pequeña pausa para cambio de canal
                     
                     # Iniciar deauth en este canal
