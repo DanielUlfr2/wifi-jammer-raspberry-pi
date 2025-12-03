@@ -1,0 +1,12 @@
+# Dependencias para CC1101 Jammer - Versión Python
+# Para Raspberry Pi 4
+
+# Comunicación SPI
+spidev>=3.5
+
+# Control de GPIO
+RPi.GPIO>=0.7.1
+
+# Alternativa más moderna (opcional)
+# gpiozero>=1.6.2
+

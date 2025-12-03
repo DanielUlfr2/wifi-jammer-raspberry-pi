@@ -1,0 +1,96 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Archivos de datos del proyecto
+*.dat
+*.pcap
+*.cap
+wifi_eeprom.dat
+cc1101_eeprom.dat
+
+# Logs
+*.log
+logs/
+
+# Historial de comandos
+.wifi_jammer_history
+
+# Archivos temporales
+*.tmp
+*.bak
+*.cache
+
+# Archivos de sistema
+Thumbs.db
+desktop.ini
+
+# Archivos de configuración local (no subir)
+config_local.py
+.env
+.secrets
+
+# Archivos compilados
+*.pyc
+*.pyo
+*.pyd
+
+# Distribución / empaquetado
+*.zip
+*.tar.gz
+*.rar
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+

@@ -1,0 +1,12 @@
+# Dependencias para WiFi Jammer - Versión WiFi
+# Para Raspberry Pi 4 con adaptador WiFi BrosTrend AC1200 AC3L
+
+# Captura e inyección de paquetes WiFi
+scapy>=2.4.5
+
+# Control de interfaces WiFi (opcional pero recomendado)
+pyric>=0.1.6.3
+
+# Utilidades del sistema (instalar con apt):
+# sudo apt install aircrack-ng wireless-tools iw
+
