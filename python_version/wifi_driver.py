@@ -581,7 +581,7 @@ class WiFiDriver:
                 self.set_monitor_mode(True)
             
             result = subprocess.run(['sudo', 'iw', 'dev', interface, 'set', 'channel', str(channel)], 
-                                  capture_output=True, timeout=10, stderr=subprocess.PIPE)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
             
             if result.returncode == 0:
                 time.sleep(0.1)  # Esperar cambio de canal
