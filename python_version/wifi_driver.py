@@ -253,56 +253,92 @@ class WiFiDriver:
             return False
         
         # Verificar permisos
-        if enable and os.geteuid() != 0:
-            print("ADVERTENCIA: Modo monitor requiere permisos de administrador (sudo)")
-            # Continuar de todas formas, puede funcionar en algunos casos
+        try:
+            if enable and hasattr(os, 'geteuid') and os.geteuid() != 0:
+                print("ADVERTENCIA: Modo monitor requiere permisos de administrador (sudo)")
+        except AttributeError:
+            pass
         
         try:
             if enable and not self.monitor_mode:
-                # Verificar si aircrack-ng está disponible
+                # PASO 1: Liberar interfaz - Detener procesos que bloquean
+                print("Liberando interfaz WiFi...")
+                try:
+                    subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
+                                 capture_output=True, timeout=15, stderr=subprocess.DEVNULL)
+                    time.sleep(1)
+                except (subprocess.TimeoutExpired, Exception):
+                    pass
+                
+                # PASO 2: Desactivar NetworkManager para esta interfaz
+                try:
+                    subprocess.run(['sudo', 'nmcli', 'device', 'set', self.interface, 'managed', 'no'], 
+                                 capture_output=True, timeout=5, stderr=subprocess.DEVNULL)
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+                
+                # PASO 3: Bajar la interfaz antes de cambiar modo
+                try:
+                    subprocess.run(['sudo', 'ip', 'link', 'set', self.interface, 'down'], 
+                                 capture_output=True, timeout=5, stderr=subprocess.DEVNULL)
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+                
+                # PASO 4: Intentar activar modo monitor
                 airmon_available = self._check_command_available('airmon-ng')
                 
                 if airmon_available:
                     # Intentar con airmon-ng primero (más confiable)
-                    result = subprocess.run(['sudo', 'airmon-ng', 'start', self.interface], 
-                                          capture_output=True, text=True, timeout=10)
-                    if result.returncode == 0:
-                        # Buscar nueva interfaz monitor
-                        for line in result.stdout.split('\n'):
-                            if 'monitor mode' in line.lower() or 'mon' in line.lower():
-                                parts = line.split()
-                                for part in parts:
-                                    if self.interface in part and 'mon' in part:
-                                        self.monitor_interface = part
+                    try:
+                        result = subprocess.run(['sudo', 'airmon-ng', 'start', self.interface], 
+                                              capture_output=True, text=True, timeout=15)
+                        if result.returncode == 0:
+                            # Buscar nueva interfaz monitor
+                            for line in result.stdout.split('\n'):
+                                if 'monitor mode' in line.lower() or 'mon' in line.lower():
+                                    parts = line.split()
+                                    for part in parts:
+                                        if self.interface in part and 'mon' in part:
+                                            self.monitor_interface = part
+                                            break
+                                    if self.monitor_interface:
                                         break
-                                if self.monitor_interface:
-                                    break
-                        
-                        # Si no se encontró, buscar patrones comunes
-                        if not self.monitor_interface:
-                            monitor_names = [f"{self.interface}mon", f"mon{self.interface[4:]}", f"{self.interface}mon0"]
-                            for name in monitor_names:
-                                if self._interface_exists(name):
-                                    self.monitor_interface = name
-                                    break
+                            
+                            # Si no se encontró, buscar patrones comunes
+                            if not self.monitor_interface:
+                                monitor_names = [f"{self.interface}mon", f"mon{self.interface[4:]}", f"{self.interface}mon0"]
+                                for name in monitor_names:
+                                    if self._interface_exists(name):
+                                        self.monitor_interface = name
+                                        break
+                    except subprocess.TimeoutExpired:
+                        print("ADVERTENCIA: Timeout con airmon-ng, intentando método alternativo...")
                 
                 # Fallback: usar iw directamente
                 if not self.monitor_interface:
                     try:
-                        # Verificar que no haya procesos bloqueando
-                        subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
-                                     capture_output=True, timeout=10)
-                        time.sleep(0.5)
-                    except:
-                        pass
-                    
-                    # Cambiar a modo monitor
-                    result = subprocess.run(['sudo', 'iw', self.interface, 'set', 'monitor', 'none'], 
-                                          capture_output=True, timeout=5)
-                    if result.returncode == 0:
-                        subprocess.run(['sudo', 'ip', 'link', 'set', self.interface, 'up'], 
-                                     capture_output=True, timeout=5)
-                        self.monitor_interface = self.interface
+                        # Cambiar a modo monitor con iw
+                        result = subprocess.run(['sudo', 'iw', self.interface, 'set', 'type', 'monitor'], 
+                                              capture_output=True, timeout=10, stderr=subprocess.PIPE)
+                        if result.returncode == 0:
+                            # Subir la interfaz
+                            subprocess.run(['sudo', 'ip', 'link', 'set', self.interface, 'up'], 
+                                         capture_output=True, timeout=5)
+                            self.monitor_interface = self.interface
+                        else:
+                            error_msg = result.stderr.decode('utf-8', errors='ignore') if result.stderr else ""
+                            if "Device or resource busy" in error_msg:
+                                print("ERROR: La interfaz está siendo usada por otro proceso.")
+                                print("Intenta manualmente: sudo airmon-ng check kill")
+                                return False
+                    except subprocess.TimeoutExpired:
+                        print("ERROR: Timeout cambiando a modo monitor")
+                        return False
+                    except Exception as e:
+                        print(f"ERROR: {e}")
+                        return False
                 
                 if self.monitor_interface:
                     self.monitor_mode = True
@@ -313,6 +349,10 @@ class WiFiDriver:
                     return True
                 else:
                     print("ERROR: No se pudo crear interfaz en modo monitor")
+                    print("Sugerencias:")
+                    print("  1. Ejecuta: sudo airmon-ng check kill")
+                    print("  2. Ejecuta: sudo nmcli device set wlan1 managed no")
+                    print("  3. Verifica que el adaptador soporte modo monitor: iw phy phy1 info")
                     return False
             
             elif not enable and self.monitor_mode:
