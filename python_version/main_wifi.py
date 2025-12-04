@@ -288,6 +288,29 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
         else:
             return config.DEFAULT_CHANNEL
     
+    def _channel_to_freq(self, channel: int) -> int:
+        """Convierte canal WiFi a frecuencia en MHz"""
+        if channel in self.wifi.CHANNELS_2_4:
+            return 2407 + (channel * 5)
+        elif channel in self.wifi.CHANNELS_5:
+            if channel <= 48:
+                return 5000 + (channel * 5)
+            elif channel <= 64:
+                return 5000 + (channel * 5)
+            else:
+                return 5000 + (channel * 5)
+        return 0
+    
+    def _format_channel_with_freq(self, channel: int) -> str:
+        """Formatea canal mostrando también la frecuencia"""
+        freq_mhz = self._channel_to_freq(channel)
+        if freq_mhz > 0:
+            if channel in self.wifi.CHANNELS_2_4:
+                return f"Canal {channel} ({freq_mhz} MHz, 2.4 GHz)"
+            elif channel in self.wifi.CHANNELS_5:
+                return f"Canal {channel} ({freq_mhz} MHz, 5 GHz)"
+        return f"Canal {channel}"
+    
     def exec_command(self, cmdline: str):
         """Ejecuta un comando (mejorado)"""
         if not cmdline.strip():
