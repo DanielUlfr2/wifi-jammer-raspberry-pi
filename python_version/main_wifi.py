@@ -350,7 +350,7 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
                 else:
                     channel = int(args)
                     if self.wifi.set_channel(channel):
-                        print(f"\r\nWiFi Channel: {channel}\r\n")
+                        print(f"\r\n{self._format_channel_with_freq(channel)}\r\n")
                     else:
                         print("Error: Canal inválido. Use 1-14 para 2.4GHz o 36-165 para 5GHz\r\n")
             
@@ -731,11 +731,11 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
             rssi = self.wifi.get_channel_rssi_avg()
             
             if rssi > -75:
-                print(f"\r\nSeñal encontrada en Canal: {channel} RSSI: {rssi} dBm\r\n")
+                print(f"\r\nSeñal encontrada en {self._format_channel_with_freq(channel)} RSSI: {rssi} dBm\r\n")
                 results.append((channel, rssi))
             else:
                 # Mostrar progreso incluso si no hay señal fuerte
-                print(f"\rCanal {channel}: RSSI {rssi} dBm", end='', flush=True)
+                print(f"\r{self._format_channel_with_freq(channel)}: RSSI {rssi} dBm", end='', flush=True)
         
         self.scan_active = False
         
