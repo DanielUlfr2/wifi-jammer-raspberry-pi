@@ -583,7 +583,10 @@ class WiFiDriver:
                 timestamp=time.time(),
                 packet_type=packet_type,
                 bssid=bssid,
-                ssid=ssid
+                ssid=ssid,
+                source=source_mac,
+                destination=dest_mac,
+                encryption=encryption_info
             )
         
         except Exception as e:
