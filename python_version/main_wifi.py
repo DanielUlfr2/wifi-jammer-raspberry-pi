@@ -184,6 +184,9 @@ ESCANEO:
 ========
 scan <start> <stop>   : Escanear rango de canales por señal
 wifiscan [duration]   : Escanear y listar redes WiFi (default: 3 seg)
+hop [interval] [jam]  : Channel hopping automático (ej: hop 1.0 jam)
+listaps / aps         : Listar APs detectados
+listclients / clients : Listar clientes-APs detectados
 
 RECEPCIÓN/TRANSMISIÓN:
 ======================
@@ -602,6 +605,67 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
                 self.wifi.set_channel(config.DEFAULT_CHANNEL)
                 print("Adaptador WiFi reinicializado\r\n")
             
+            elif command == "hop" or command == "channelhop":
+                # Channel hopping automático
+                parts = args.split() if args else []
+                if len(parts) >= 1 and parts[0].lower() in ['stop', 'off', '0']:
+                    self.wifi.stop_channel_hopping()
+                    print("\r\nChannel hopping detenido.\r\n")
+                else:
+                    # Iniciar channel hopping
+                    hop_interval = 1.0
+                    enable_jamming = False
+                    channels = None
+                    
+                    if len(parts) >= 1:
+                        try:
+                            hop_interval = float(parts[0])
+                        except:
+                            pass
+                    
+                    if len(parts) >= 2 and parts[1].lower() in ['jam', 'jamming', '1', 'on']:
+                        enable_jamming = True
+                    
+                    self.wifi.start_channel_hopping(
+                        channels=channels,
+                        hop_interval=hop_interval,
+                        enable_jamming=enable_jamming
+                    )
+                    print(f"\r\nChannel hopping iniciado (intervalo: {hop_interval}s, jamming: {enable_jamming})\r\n")
+            
+            elif command == "listaps" or command == "aps":
+                # Listar APs detectados
+                with self.wifi.clients_APs_lock:
+                    if len(self.wifi.APs) > 0:
+                        print("\r\n=== APs DETECTADOS ===\r\n")
+                        print(f"{'BSSID':<18} {'Canal':<8} {'SSID':<30}\r\n")
+                        print("-" * 60 + "\r\n")
+                        for ap in self.wifi.APs:
+                            bssid = ap[0] if len(ap) > 0 else "Unknown"
+                            channel = ap[1] if len(ap) > 1 else "?"
+                            ssid = ap[2] if len(ap) > 2 else "<hidden>"
+                            print(f"{bssid:<18} {channel:<8} {ssid:<30}\r\n")
+                        print(f"\r\nTotal: {len(self.wifi.APs)} APs\r\n")
+                    else:
+                        print("\r\nNo se han detectado APs aún. Usa 'rx' o 'wifiscan' para detectar redes.\r\n")
+            
+            elif command == "listclients" or command == "clients":
+                # Listar clientes-APs detectados
+                with self.wifi.clients_APs_lock:
+                    if len(self.wifi.clients_APs) > 0:
+                        print("\r\n=== CLIENTES-APs DETECTADOS ===\r\n")
+                        print(f"{'Cliente':<18} {'AP':<18} {'Canal':<8} {'SSID':<30}\r\n")
+                        print("-" * 80 + "\r\n")
+                        for ca in self.wifi.clients_APs:
+                            client = ca[0] if len(ca) > 0 else "Unknown"
+                            ap = ca[1] if len(ca) > 1 else "Unknown"
+                            channel = ca[2] if len(ca) > 2 else "?"
+                            ssid = ca[3] if len(ca) > 3 else ""
+                            print(f"{client:<18} {ap:<18} {channel:<8} {ssid:<30}\r\n")
+                        print(f"\r\nTotal: {len(self.wifi.clients_APs)} pares cliente-AP\r\n")
+                    else:
+                        print("\r\nNo se han detectado clientes aún. Usa 'rx' para capturar tráfico.\r\n")
+            
             elif command == "quit" or command == "q":
                 print("\r\nSaliendo...\r\n")
                 self.cleanup()
@@ -649,10 +713,47 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
         print(f"Buffer: {stats['buffer_size']} paquetes")
         print(f"Redes Detectadas: {stats['networks_found']}")
         print()
+        
+        # Mostrar APs y clientes detectados (nueva funcionalidad)
+        with self.wifi.clients_APs_lock:
+            if len(self.wifi.APs) > 0:
+                print("=== APs DETECTADOS ===")
+                for ap in self.wifi.APs[:10]:  # Mostrar máximo 10
+                    bssid = ap[0] if len(ap) > 0 else "Unknown"
+                    channel = ap[1] if len(ap) > 1 else "?"
+                    ssid = ap[2] if len(ap) > 2 else "<hidden>"
+                    print(f"  {bssid} - Canal {channel} - {ssid}")
+                if len(self.wifi.APs) > 10:
+                    print(f"  ... y {len(self.wifi.APs) - 10} APs más")
+                print()
+            
+            if len(self.wifi.clients_APs) > 0:
+                print("=== CLIENTES-APs DETECTADOS ===")
+                for ca in self.wifi.clients_APs[:10]:  # Mostrar máximo 10
+                    client = ca[0] if len(ca) > 0 else "Unknown"
+                    ap = ca[1] if len(ca) > 1 else "Unknown"
+                    channel = ca[2] if len(ca) > 2 else "?"
+                    ssid = ca[3] if len(ca) > 3 else ""
+                    if ssid:
+                        print(f"  {client} <-> {ap} (Canal {channel}, SSID: {ssid})")
+                    else:
+                        print(f"  {client} <-> {ap} (Canal {channel})")
+                if len(self.wifi.clients_APs) > 10:
+                    print(f"  ... y {len(self.wifi.clients_APs) - 10} pares más")
+                print()
+        
         print("=== BUFFER GRABACIÓN ===")
         print(f"Frames almacenados: {self.frames_in_buffer}")
         print(f"Posición: {self.big_recording_buffer_pos}/{config.RECORDINGBUFFERSIZE}")
         print()
+        
+        # Channel hopping
+        if hasattr(self.wifi, 'channel_hop_active') and self.wifi.channel_hop_active:
+            print("=== CHANNEL HOPPING ===")
+            print(f"Estado: ACTIVO")
+            if hasattr(self.wifi, 'current_hop_channel'):
+                print(f"Canal actual: {self.wifi.current_hop_channel}")
+            print()
         
         # Filtros activos
         if self.filter_bssid or self.filter_ssid or self.filter_type:
@@ -1082,6 +1183,9 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
     def cleanup(self):
         """Limpia recursos de forma segura"""
         try:
+            # Detener channel hopping si está activo
+            if hasattr(self.wifi, 'channel_hop_active') and self.wifi.channel_hop_active:
+                self.wifi.stop_channel_hopping()
             self.wifi.cleanup()
             self.history.save()
         except:
