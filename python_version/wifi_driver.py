@@ -871,23 +871,26 @@ class WiFiDriver:
                 print(f"Iniciando jamming en {interface}...")
                 print(f"Comando: {' '.join(cmd)}")
                 
-                # Primero, probar si aireplay-ng puede ejecutarse correctamente
-                # Ejecutar una prueba rápida para ver si hay errores inmediatos
-                test_cmd = cmd.copy()
-                # Reemplazar --deauth 0 con --test para verificar inyección
-                if '--deauth' in test_cmd:
-                    deauth_idx = test_cmd.index('--deauth')
-                    test_cmd[deauth_idx + 1] = '1'  # Solo 1 paquete para prueba
+                # Verificar primero que la interfaz esté en modo monitor
+                if not self.monitor_mode:
+                    print("ERROR: La interfaz no está en modo monitor.")
+                    return False
+                
+                # Verificar que la interfaz monitor existe
+                monitor_iface = self.monitor_interface or interface
+                if not monitor_iface:
+                    print("ERROR: No se pudo determinar la interfaz monitor.")
+                    return False
                 
                 # Ejecutar en background con mejor manejo
                 try:
-                    # No usar preexec_fn porque puede causar problemas con sudo
+                    # Usar stderr=subprocess.PIPE separado para capturar errores
                     self.jam_process = subprocess.Popen(
                         cmd, 
                         stdout=subprocess.PIPE, 
-                        stderr=subprocess.STDOUT,  # Combinar stderr con stdout
-                        universal_newlines=True,
-                        bufsize=1  # Line buffered
+                        stderr=subprocess.PIPE,
+                        universal_newlines=False,  # Mantener bytes para mejor compatibilidad
+                        bufsize=0  # Sin buffer para leer inmediatamente
                     )
                 except Exception as e:
                     print(f"ERROR ejecutando aireplay-ng: {e}")
@@ -895,41 +898,82 @@ class WiFiDriver:
                 
                 # Leer salida inmediatamente para capturar errores
                 import select
-                error_lines = []
+                import fcntl
+                error_output = b""
                 start_time = time.time()
-                max_wait = 2.0  # Esperar máximo 2 segundos
+                max_wait = 1.5  # Esperar máximo 1.5 segundos
                 
+                # Hacer stdout no bloqueante
+                try:
+                    if hasattr(fcntl, 'F_SETFL'):
+                        flags = fcntl.fcntl(self.jam_process.stdout.fileno(), fcntl.F_GETFL)
+                        fcntl.fcntl(self.jam_process.stdout.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
+                        flags = fcntl.fcntl(self.jam_process.stderr.fileno(), fcntl.F_GETFL)
+                        fcntl.fcntl(self.jam_process.stderr.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
+                except:
+                    pass
+                
+                # Leer salida mientras el proceso está corriendo
                 while time.time() - start_time < max_wait:
                     if self.jam_process.poll() is not None:
-                        # Proceso terminó, leer toda la salida
-                        remaining_output = self.jam_process.stdout.read()
-                        if remaining_output:
-                            error_lines.append(remaining_output)
+                        # Proceso terminó, leer toda la salida restante
+                        try:
+                            remaining_stdout = self.jam_process.stdout.read()
+                            remaining_stderr = self.jam_process.stderr.read()
+                            if remaining_stdout:
+                                error_output += remaining_stdout
+                            if remaining_stderr:
+                                error_output += remaining_stderr
+                        except:
+                            pass
                         break
                     
-                    # Intentar leer línea si está disponible
-                    if hasattr(self.jam_process.stdout, 'readline'):
-                        try:
-                            # Usar select para verificar si hay datos (solo en Unix)
-                            if hasattr(select, 'select'):
-                                ready, _, _ = select.select([self.jam_process.stdout], [], [], 0.1)
-                                if ready:
-                                    line = self.jam_process.stdout.readline()
-                                    if line:
-                                        error_lines.append(line)
-                                        # Si vemos un error típico, salir temprano
-                                        if any(keyword in line.lower() for keyword in ['error', 'failed', 'cannot', 'unable']):
-                                            time.sleep(0.2)  # Dar tiempo para más salida
-                                            break
-                            else:
-                                # Windows o sin select, esperar un poco
-                                time.sleep(0.2)
+                    # Intentar leer datos disponibles
+                    try:
+                        if hasattr(select, 'select'):
+                            ready_stdout, ready_stderr = [], []
+                            try:
+                                ready_stdout, _, _ = select.select([self.jam_process.stdout], [], [], 0.1)
+                            except:
+                                pass
+                            try:
+                                ready_stderr, _, _ = select.select([self.jam_process.stderr], [], [], 0.0)
+                            except:
+                                pass
+                            
+                            if ready_stdout:
+                                try:
+                                    data = self.jam_process.stdout.read(4096)
+                                    if data:
+                                        error_output += data
+                                except:
+                                    pass
+                            
+                            if ready_stderr:
+                                try:
+                                    data = self.jam_process.stderr.read(4096)
+                                    if data:
+                                        error_output += data
+                                except:
+                                    pass
+                        else:
+                            # Sin select, esperar un poco y verificar
+                            time.sleep(0.2)
+                            if self.jam_process.poll() is not None:
                                 break
-                        except:
-                            break
-                    else:
-                        time.sleep(0.2)
-                        break
+                    except:
+                        time.sleep(0.1)
+                
+                # Si el proceso terminó, leer toda la salida restante
+                if self.jam_process.poll() is not None:
+                    try:
+                        remaining_stdout, remaining_stderr = self.jam_process.communicate(timeout=0.5)
+                        if remaining_stdout:
+                            error_output += remaining_stdout
+                        if remaining_stderr:
+                            error_output += remaining_stderr
+                    except:
+                        pass
                 
                 # Verificar si el proceso terminó
                 if self.jam_process.poll() is not None:
@@ -949,10 +993,18 @@ class WiFiDriver:
                     print(f"ERROR: aireplay-ng terminó inmediatamente")
                     print(f"Código de salida: {returncode}")
                     print(f"{'='*60}")
-                    if output:
-                        print(f"\nSalida de aireplay-ng:\n{output}")
+                    
+                    # Decodificar salida
+                    try:
+                        output_text = error_output.decode('utf-8', errors='replace')
+                    except:
+                        output_text = str(error_output)
+                    
+                    if output_text.strip():
+                        print(f"\nSalida de aireplay-ng:\n{output_text}")
                     else:
                         print("\nNo se capturó salida de aireplay-ng")
+                        print("Esto puede indicar que el proceso falló antes de escribir salida.")
                     
                     # Diagnóstico adicional
                     print(f"\n{'='*60}")
