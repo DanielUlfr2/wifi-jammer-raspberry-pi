@@ -632,7 +632,7 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
         print(f"Interfaz: {self.wifi.interface}")
         if self.wifi.monitor_interface:
             print(f"Modo Monitor: {self.wifi.monitor_interface}")
-        print(f"Canal Actual: {self.wifi.current_channel} ({self.wifi.current_band} GHz)")
+        print(f"Canal Actual: {self._format_channel_with_freq(self.wifi.current_channel)}")
         print(f"RSSI Último: {self.wifi.get_rssi()} dBm")
         print()
         print("=== MODOS ACTIVOS ===")
