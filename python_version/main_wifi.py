@@ -720,8 +720,13 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
         
         if results:
             print(f"\r\nResumen: {len(results)} canales con señal encontrados.\r\n")
-            for channel, rssi in results:
-                print(f"  Canal {channel}: {rssi} dBm\r\n")
+            for result in results:
+                if len(result) == 4:
+                    channel, rssi, freq_mhz, band = result
+                    print(f"  Canal {channel} ({freq_mhz} MHz, {band}): {rssi} dBm\r\n")
+                else:
+                    channel, rssi = result
+                    print(f"  Canal {channel}: {rssi} dBm\r\n")
         else:
             print("\r\nNo se encontraron señales fuertes (RSSI > -75 dBm) en el rango especificado.\r\n")
             print("Nota: Puede haber tráfico débil. Usa 'wifiscan' para ver todas las redes.\r\n")
@@ -989,10 +994,16 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
                     except:
                         pass
                 
-                # Modo Recepción
+                # Modo Recepción - Mostrar información detallada de paquetes WiFi
                 elif self.receiving_mode and not self.recording_mode:
-                    hex_str = utils.bytes_to_hex(bytes(self.cc_receiving_buffer[:length]))
-                    print(hex_str, end='', flush=True)
+                    # Obtener el último paquete procesado del WiFi driver
+                    if hasattr(self.wifi, 'last_packet') and self.wifi.last_packet:
+                        pkt = self.wifi.last_packet
+                        self._print_packet_info(pkt)
+                    else:
+                        # Fallback: mostrar hex si no hay información parseada
+                        hex_str = utils.bytes_to_hex(bytes(self.cc_receiving_buffer[:length]))
+                        print(hex_str, end='', flush=True)
                 
                 # Modo Grabación
                 elif self.recording_mode and not self.receiving_mode:

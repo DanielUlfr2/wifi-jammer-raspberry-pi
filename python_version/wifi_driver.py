@@ -478,30 +478,98 @@ class WiFiDriver:
                 channel = packet[RadioTap].Channel or self.current_channel
             
             # Extraer información de Dot11
+            source_mac = None
+            dest_mac = None
+            encryption_info = None
+            
             if packet.haslayer(Dot11):
                 dot11 = packet[Dot11]
-                bssid = dot11.addr3 if dot11.addr3 else (dot11.addr2 if dot11.addr2 else dot11.addr1)
                 
-                # Determinar tipo de paquete
+                # Extraer direcciones MAC según el tipo de paquete
+                if dot11.addr1:  # Destination
+                    dest_mac = dot11.addr1
+                if dot11.addr2:  # Source/Transmitter
+                    source_mac = dot11.addr2
+                if dot11.addr3:  # BSSID (en paquetes de infraestructura)
+                    bssid = dot11.addr3
+                elif dot11.addr2:  # Fallback
+                    bssid = dot11.addr2
+                elif dot11.addr1:
+                    bssid = dot11.addr1
+                
+                # Determinar tipo de paquete y extraer información adicional
                 if packet.haslayer(Dot11Beacon):
                     packet_type = "Beacon"
-                    # Extraer SSID
+                    # Extraer SSID y cifrado
+                    if packet.haslayer(Dot11Elt):
+                        for elt in packet[Dot11Elt]:
+                            if elt.ID == 0:  # SSID
+                                ssid = elt.info.decode('utf-8', errors='ignore') if elt.info else "<hidden>"
+                            elif elt.ID == 48:  # RSN (WPA2)
+                                encryption_info = "WPA2"
+                            elif elt.ID == 221:  # Vendor specific (puede contener WPA)
+                                if b'WPA' in elt.info or b'wpa' in elt.info:
+                                    encryption_info = "WPA"
+                
+                elif packet.haslayer(Dot11ProbeReq):
+                    packet_type = "ProbeReq"
+                    # Extraer SSID de Probe Request
                     if packet.haslayer(Dot11Elt):
                         for elt in packet[Dot11Elt]:
                             if elt.ID == 0:  # SSID
                                 ssid = elt.info.decode('utf-8', errors='ignore') if elt.info else "<hidden>"
                                 break
                 
-                elif packet.haslayer(Dot11ProbeReq):
-                    packet_type = "ProbeReq"
                 elif packet.haslayer(Dot11ProbeResp):
                     packet_type = "ProbeResp"
-                elif dot11.type == 0 and dot11.subtype == 8:
-                    packet_type = "Beacon"
-                elif dot11.type == 1:
-                    packet_type = "Control"
-                elif dot11.type == 2:
-                    packet_type = "Data"
+                    # Extraer SSID de Probe Response
+                    if packet.haslayer(Dot11Elt):
+                        for elt in packet[Dot11Elt]:
+                            if elt.ID == 0:  # SSID
+                                ssid = elt.info.decode('utf-8', errors='ignore') if elt.info else "<hidden>"
+                                break
+                
+                elif dot11.type == 0:  # Management frames
+                    if dot11.subtype == 8:
+                        packet_type = "Beacon"
+                    elif dot11.subtype == 4:
+                        packet_type = "ProbeReq"
+                    elif dot11.subtype == 5:
+                        packet_type = "ProbeResp"
+                    elif dot11.subtype == 10:
+                        packet_type = "Disassoc"
+                    elif dot11.subtype == 11:
+                        packet_type = "Auth"
+                    elif dot11.subtype == 12:
+                        packet_type = "Deauth"
+                    else:
+                        packet_type = f"Mgmt-{dot11.subtype}"
+                
+                elif dot11.type == 1:  # Control frames
+                    if dot11.subtype == 11:
+                        packet_type = "RTS"
+                    elif dot11.subtype == 12:
+                        packet_type = "CTS"
+                    elif dot11.subtype == 13:
+                        packet_type = "ACK"
+                    else:
+                        packet_type = f"Ctrl-{dot11.subtype}"
+                
+                elif dot11.type == 2:  # Data frames
+                    if dot11.subtype == 0:
+                        packet_type = "Data"
+                    elif dot11.subtype == 1:
+                        packet_type = "Data+CF-Ack"
+                    elif dot11.subtype == 2:
+                        packet_type = "Data+CF-Poll"
+                    elif dot11.subtype == 3:
+                        packet_type = "Data+CF-Ack+CF-Poll"
+                    elif dot11.subtype == 4:
+                        packet_type = "Null"
+                    elif dot11.subtype == 8:
+                        packet_type = "QoS Data"
+                    else:
+                        packet_type = f"Data-{dot11.subtype}"
                 else:
                     packet_type = f"Type{dot11.type}Subtype{dot11.subtype}"
             
