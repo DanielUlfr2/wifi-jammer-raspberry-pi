@@ -666,7 +666,7 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
             print()
         print()
     
-    def _cmd_wifiscan(self, duration: float = 3.0):
+    def _cmd_wifiscan(self, duration: float = 5.0):
         """Escanea y lista redes WiFi"""
         print(f"\r\nEscaneando redes WiFi (duración: {duration}s)...\r\n")
         
