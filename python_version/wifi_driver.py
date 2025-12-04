@@ -556,7 +556,12 @@ class WiFiDriver:
                     if packet.haslayer(Dot11Elt):
                         for elt in packet[Dot11Elt]:
                             if elt.ID == 0:  # SSID
-                                ssid = elt.info.decode('utf-8', errors='ignore') if elt.info else "<hidden>"
+                                if elt.info and len(elt.info) > 0:
+                                    ssid = elt.info.decode('utf-8', errors='ignore')
+                                    if not ssid.strip():
+                                        ssid = "<hidden>"
+                                else:
+                                    ssid = "<hidden>"
                                 break
                 
                 elif dot11.type == 0:  # Management frames
@@ -764,17 +769,26 @@ class WiFiDriver:
             packets = self.packet_buffer.peek(100)
             
             for pkt in packets:
-                if isinstance(pkt, WiFiPacket) and pkt.ssid and pkt.bssid:
-                    key = pkt.bssid
-                    if key not in networks or pkt.rssi > networks[key].rssi:
-                        networks[key] = WiFiNetwork(
-                            ssid=pkt.ssid,
-                            bssid=pkt.bssid,
-                            channel=pkt.channel,
-                            rssi=pkt.rssi,
-                            encryption="Unknown",  # Requeriría parsing adicional
-                            last_seen=pkt.timestamp
-                        )
+                if isinstance(pkt, WiFiPacket) and pkt.bssid:
+                    # Filtrar BSSID de broadcast (FF:FF:FF:FF:FF:FF) - no es una red real
+                    if pkt.bssid.upper() == "FF:FF:FF:FF:FF:FF" or pkt.bssid.upper() == "FFFFFFFFFFFF":
+                        continue
+                    
+                    # Solo procesar si tiene SSID o es un Beacon/ProbeResp (redes reales)
+                    if pkt.ssid or pkt.packet_type in ["Beacon", "ProbeResp"]:
+                        key = pkt.bssid
+                        # Si no hay SSID pero es un Beacon, marcar como hidden
+                        ssid_value = pkt.ssid if pkt.ssid and pkt.ssid != "<hidden>" else "<hidden>"
+                        
+                        if key not in networks or pkt.rssi > networks[key].rssi:
+                            networks[key] = WiFiNetwork(
+                                ssid=ssid_value,
+                                bssid=pkt.bssid,
+                                channel=pkt.channel,
+                                rssi=pkt.rssi,
+                                encryption="Unknown",  # Requeriría parsing adicional
+                                last_seen=pkt.timestamp
+                            )
         
         # Actualizar cache de redes
         self.networks.update(networks)
