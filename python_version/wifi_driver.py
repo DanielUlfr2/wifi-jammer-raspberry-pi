@@ -755,40 +755,100 @@ class WiFiDriver:
         networks = {}
         start_time = time.time()
         
-        # Escanear todos los canales
-        all_channels = self.CHANNELS_2_4 + self.CHANNELS_5
+        # Limpiar buffer antes de escanear para obtener datos frescos
+        self.packet_buffer = CircularBuffer(1000)
+        
+        # Calcular tiempo por canal basado en duración total
+        # Priorizar 2.4 GHz (más común) y luego 5 GHz
+        channels_2_4 = self.CHANNELS_2_4.copy()
+        channels_5 = self.CHANNELS_5.copy()
+        
+        # Si la duración es corta, escanear solo 2.4 GHz primero
+        if duration < 3.0:
+            all_channels = channels_2_4
+        else:
+            all_channels = channels_2_4 + channels_5
+        
+        time_per_channel = duration / len(all_channels) if all_channels else 0.1
+        # Mínimo 0.3 segundos por canal para capturar múltiples beacons
+        # Los beacons se envían típicamente cada 100ms
+        time_per_channel = max(0.3, time_per_channel)
+        
+        print(f"Escaneando {len(all_channels)} canales ({time_per_channel:.2f}s por canal)...")
         
         for channel in all_channels:
             if time.time() - start_time > duration:
                 break
             
-            self.set_channel(channel)
-            time.sleep(0.2)  # Esperar capturas en este canal
+            # Cambiar a este canal
+            self.set_channel(channel, silent=True)
             
-            # Obtener paquetes del buffer
-            packets = self.packet_buffer.peek(100)
+            # Esperar más tiempo para capturar múltiples beacons
+            # Los beacons se envían típicamente cada 100ms
+            scan_time = min(time_per_channel, duration - (time.time() - start_time))
+            if scan_time <= 0:
+                break
             
-            for pkt in packets:
+            # Capturar paquetes activamente durante el tiempo asignado
+            scan_start = time.time()
+            packets_captured = 0
+            
+            while (time.time() - scan_start) < scan_time:
+                # Capturar paquetes directamente en este canal
+                if SCAPY_AVAILABLE:
+                    interface = self.monitor_interface or self.interface
+                    try:
+                        # Capturar paquetes con timeout corto
+                        captured = sniff(iface=interface, count=20, timeout=0.1, quiet=True)
+                        
+                        for packet in captured:
+                            wifi_pkt = self._parse_packet(packet)
+                            if wifi_pkt:
+                                packets_captured += 1
+                                # Añadir al buffer
+                                try:
+                                    self.packet_buffer.add(wifi_pkt)
+                                except:
+                                    pass
+                    except:
+                        pass
+                
+                # Pequeña pausa para no saturar
+                time.sleep(0.05)
+            
+            # Obtener todos los paquetes del buffer capturados en este canal
+            all_packets = self.packet_buffer.peek(500)  # Revisar más paquetes
+            
+            for pkt in all_packets:
                 if isinstance(pkt, WiFiPacket) and pkt.bssid:
                     # Filtrar BSSID de broadcast (FF:FF:FF:FF:FF:FF) - no es una red real
                     if pkt.bssid.upper() == "FF:FF:FF:FF:FF:FF" or pkt.bssid.upper() == "FFFFFFFFFFFF":
                         continue
                     
-                    # Solo procesar si tiene SSID o es un Beacon/ProbeResp (redes reales)
-                    if pkt.ssid or pkt.packet_type in ["Beacon", "ProbeResp"]:
+                    # Solo procesar Beacons, ProbeResp o paquetes con SSID (redes reales)
+                    if pkt.packet_type in ["Beacon", "ProbeResp"] or pkt.ssid:
                         key = pkt.bssid
                         # Si no hay SSID pero es un Beacon, marcar como hidden
-                        ssid_value = pkt.ssid if pkt.ssid and pkt.ssid != "<hidden>" else "<hidden>"
+                        ssid_value = pkt.ssid if (pkt.ssid and pkt.ssid != "<hidden>") else "<hidden>"
                         
-                        if key not in networks or pkt.rssi > networks[key].rssi:
+                        # Actualizar o agregar red (usar mejor RSSI si ya existe)
+                        if key not in networks:
                             networks[key] = WiFiNetwork(
                                 ssid=ssid_value,
                                 bssid=pkt.bssid,
                                 channel=pkt.channel,
                                 rssi=pkt.rssi,
-                                encryption="Unknown",  # Requeriría parsing adicional
+                                encryption="Unknown",
                                 last_seen=pkt.timestamp
                             )
+                        else:
+                            # Actualizar si este paquete tiene mejor RSSI o SSID más reciente
+                            if pkt.rssi > networks[key].rssi or (not networks[key].ssid and ssid_value != "<hidden>"):
+                                networks[key].rssi = pkt.rssi
+                                networks[key].channel = pkt.channel
+                                networks[key].last_seen = pkt.timestamp
+                                if ssid_value != "<hidden>" or not networks[key].ssid:
+                                    networks[key].ssid = ssid_value
         
         # Actualizar cache de redes
         self.networks.update(networks)
