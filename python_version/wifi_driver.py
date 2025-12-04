@@ -478,7 +478,34 @@ class WiFiDriver:
             # Extraer RSSI y canal
             if packet.haslayer(RadioTap):
                 rssi = packet[RadioTap].dBm_AntSignal or -100
-                channel = packet[RadioTap].Channel or self.current_channel
+                # RadioTap.Channel puede contener frecuencia en MHz o número de canal
+                # Intentar obtener el canal, si es frecuencia, convertirla
+                raw_channel = packet[RadioTap].Channel
+                if raw_channel:
+                    # Si el valor es > 100, probablemente es frecuencia en MHz
+                    if raw_channel > 100:
+                        # Convertir frecuencia a canal
+                        if 2400 <= raw_channel <= 2500:
+                            # 2.4 GHz: 2412 MHz = canal 1, 2417 MHz = canal 2, etc.
+                            channel = int((raw_channel - 2407) / 5) + 1
+                            if channel < 1:
+                                channel = 1
+                            elif channel > 14:
+                                channel = 14
+                        elif 5000 <= raw_channel <= 6000:
+                            # 5 GHz: 5000 + (canal * 5) = frecuencia
+                            channel = int((raw_channel - 5000) / 5)
+                            if channel < 36:
+                                channel = 36
+                            elif channel > 165:
+                                channel = 165
+                        else:
+                            channel = self.current_channel
+                    else:
+                        # Es un número de canal válido
+                        channel = int(raw_channel)
+                else:
+                    channel = self.current_channel
             
             # Extraer información de Dot11
             source_mac = None
