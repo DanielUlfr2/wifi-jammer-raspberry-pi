@@ -673,17 +673,17 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
         networks = self.wifi.scan_networks(duration=duration)
         
         if networks:
-            print(f"\r\n{'SSID':<30} {'BSSID':<18} {'Canal':<8} {'RSSI':<8} {'Último'}\r\n")
-            print("-" * 80 + "\r\n")
+            print(f"\r\n{'SSID':<30} {'BSSID':<18} {'Canal':<25} {'RSSI':<8} {'Último'}\r\n")
+            print("-" * 95 + "\r\n")
             
             for net in networks[:20]:  # Mostrar máximo 20
                 ssid = net.ssid[:28] if net.ssid else "<hidden>"
                 bssid = net.bssid or "Unknown"
-                channel = str(net.channel)
+                channel_str = self._format_channel_with_freq(net.channel)
                 rssi = f"{net.rssi} dBm"
                 elapsed = int(time.time() - net.last_seen)
                 
-                print(f"{ssid:<30} {bssid:<18} {channel:<8} {rssi:<8} {elapsed}s\r\n")
+                print(f"{ssid:<30} {bssid:<18} {channel_str:<25} {rssi:<8} {elapsed}s\r\n")
             
             if len(networks) > 20:
                 print(f"\r\n... y {len(networks) - 20} redes más.\r\n")
