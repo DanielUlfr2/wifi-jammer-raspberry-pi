@@ -1018,6 +1018,44 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
                         self.big_recording_buffer_pos = 0
                         self.recording_mode = False
     
+    def _print_packet_info(self, pkt):
+        """Muestra información detallada de un paquete WiFi"""
+        try:
+            # Información básica
+            timestamp = time.strftime("%H:%M:%S", time.localtime(pkt.timestamp))
+            print(f"\r\n[{timestamp}] ", end='', flush=True)
+            
+            # Tipo de trama 802.11
+            print(f"Tipo: {pkt.packet_type} | ", end='', flush=True)
+            
+            # MAC addresses
+            if pkt.bssid:
+                print(f"BSSID: {pkt.bssid} | ", end='', flush=True)
+            if pkt.source:
+                print(f"Source: {pkt.source} | ", end='', flush=True)
+            if pkt.destination:
+                print(f"Dest: {pkt.destination} | ", end='', flush=True)
+            
+            # SSID
+            if pkt.ssid:
+                ssid_display = pkt.ssid if pkt.ssid != "<hidden>" else "<hidden>"
+                print(f"SSID: {ssid_display} | ", end='', flush=True)
+            
+            # Canal y RSSI
+            print(f"Ch: {pkt.channel} | RSSI: {pkt.rssi} dBm", end='', flush=True)
+            
+            # Información adicional si está disponible
+            if hasattr(pkt, 'encryption') and pkt.encryption:
+                print(f" | Enc: {pkt.encryption}", end='', flush=True)
+            
+            print()  # Nueva línea
+            
+        except Exception as e:
+            # Fallback: mostrar hex si hay error
+            if hasattr(pkt, 'data'):
+                hex_str = utils.bytes_to_hex(pkt.data[:64])  # Primeros 64 bytes
+                print(f"\r\nPaquete: {hex_str}...\r\n", end='', flush=True)
+    
     def cleanup(self):
         """Limpia recursos de forma segura"""
         try:
