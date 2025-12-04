@@ -50,6 +50,9 @@ class WiFiPacket:
     packet_type: str
     bssid: Optional[str] = None
     ssid: Optional[str] = None
+    source: Optional[str] = None
+    destination: Optional[str] = None
+    encryption: Optional[str] = None
 
 
 class CircularBuffer:
