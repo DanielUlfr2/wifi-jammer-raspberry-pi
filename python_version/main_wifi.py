@@ -671,35 +671,60 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
     
     def _cmd_scan_wifi(self, start_ch: int, end_ch: int):
         """Escanea canales WiFi mejorado"""
-        print(f"\r\nEscaneando canales WiFi {start_ch} a {end_ch}. Presiona Enter para detener...\r\n")
+        print(f"\r\nEscaneando canales WiFi {start_ch} a {end_ch}...\r\n")
         self.scan_active = True
         
         results = []
+        channels_to_scan = []
         
-        while self.scan_active:
-            # Verificar si hay entrada del usuario
-            if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
-                sys.stdin.readline()
+        # Construir lista de canales válidos a escanear
+        for ch in range(start_ch, min(end_ch + 1, 165)):
+            if ch in self.wifi.CHANNELS_2_4 or ch in self.wifi.CHANNELS_5:
+                channels_to_scan.append(ch)
+        
+        if not channels_to_scan:
+            print("Error: No hay canales válidos en el rango especificado.\r\n")
+            self.scan_active = False
+            return
+        
+        # Escanear cada canal una sola vez
+        for channel in channels_to_scan:
+            if not self.scan_active:
                 break
             
-            for channel in range(start_ch, min(end_ch + 1, 165)):
-                if not self.scan_active:
-                    break
-                
-                self.wifi.set_channel(channel)
-                time.sleep(0.15)
-                rssi = self.wifi.get_channel_rssi_avg()
-                
-                if rssi > -75:
-                    print(f"\r\nSeñal encontrada en Canal: {channel} RSSI: {rssi} dBm\r\n")
-                    results.append((channel, rssi))
+            # Verificar si hay entrada del usuario (no bloqueante)
+            try:
+                if not self.input_queue.empty():
+                    line = self.input_queue.get_nowait()
+                    if line and line.strip().lower() in ['', 'enter', 'stop', 'x']:
+                        print("\r\nEscaneo detenido por el usuario.\r\n")
+                        break
+            except queue.Empty:
+                pass
+            
+            self.wifi.set_channel(channel, silent=True)
+            time.sleep(0.2)  # Esperar para capturar paquetes
+            
+            rssi = self.wifi.get_channel_rssi_avg()
+            
+            if rssi > -75:
+                print(f"\r\nSeñal encontrada en Canal: {channel} RSSI: {rssi} dBm\r\n")
+                results.append((channel, rssi))
+            else:
+                # Mostrar progreso incluso si no hay señal fuerte
+                print(f"\rCanal {channel}: RSSI {rssi} dBm", end='', flush=True)
         
         self.scan_active = False
         
+        print("\r\n")  # Nueva línea después del progreso
+        
         if results:
             print(f"\r\nResumen: {len(results)} canales con señal encontrados.\r\n")
+            for channel, rssi in results:
+                print(f"  Canal {channel}: {rssi} dBm\r\n")
         else:
-            print("\r\nNo se encontraron señales en el rango especificado.\r\n")
+            print("\r\nNo se encontraron señales fuertes (RSSI > -75 dBm) en el rango especificado.\r\n")
+            print("Nota: Puede haber tráfico débil. Usa 'wifiscan' para ver todas las redes.\r\n")
     
     def _cmd_filter(self, args: str):
         """Maneja filtros"""
@@ -1000,7 +1025,7 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
         # Usar threading para entrada de comandos (más robusto)
         import threading
         
-        input_queue = queue.Queue()
+        self.input_queue = queue.Queue()
         input_active = True
         
         def input_thread():
@@ -1010,9 +1035,9 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
                     # Usar input() normal en thread separado (bloqueante pero funciona mejor)
                     line = input()
                     if line:
-                        input_queue.put(line)
+                        self.input_queue.put(line)
                 except (EOFError, KeyboardInterrupt):
-                    input_queue.put(None)
+                    self.input_queue.put(None)
                     break
                 except Exception:
                     pass
@@ -1025,8 +1050,8 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
             while True:
                 # Procesar comandos de entrada (no bloqueante)
                 try:
-                    if not input_queue.empty():
-                        line = input_queue.get_nowait()
+                    if not self.input_queue.empty():
+                        line = self.input_queue.get_nowait()
                         if line is None:
                             break
                         
