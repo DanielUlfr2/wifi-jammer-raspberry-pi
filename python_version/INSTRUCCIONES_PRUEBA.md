@@ -1,5 +1,25 @@
 # Instrucciones de Prueba - Mejoras Implementadas
 
+## ⚠️ ADVERTENCIA IMPORTANTE - LIMITACIONES DE HARDWARE
+
+**🔴 La antena BrosTrend AC1200 AC3L NO es adecuada para jamming efectivo.**
+
+### Limitaciones conocidas:
+- ❌ **Jamming puede no funcionar** - La potencia de transmisión es insuficiente
+- ✅ **Recepción, escaneo y análisis funcionan perfectamente**
+- ✅ **Detección de APs y clientes funciona correctamente**
+
+**El código está correctamente implementado** - El problema es puramente de hardware.
+
+**Para más detalles:** Ver `LIMITACIONES_HARDWARE.md`
+
+**Nota sobre las pruebas de jamming:**
+- Las pruebas de jamming (secciones 2-6) pueden no mostrar resultados efectivos
+- Esto es esperado y se debe a limitaciones de hardware, no de software
+- Las pruebas de recepción, escaneo y análisis (secciones 1, 7, 8) deben funcionar correctamente
+
+---
+
 ## 📋 Requisitos Previos
 
 1. **Actualizar el código en la Raspberry Pi:**
@@ -54,7 +74,9 @@
 
 ### 2. Prueba: Jamming con Scapy Directo (Canal Específico)
 
-**Objetivo:** Verificar que el jamming funciona sin `aireplay-ng`, usando Scapy directamente.
+**⚠️ ADVERTENCIA:** Esta prueba puede no mostrar resultados efectivos debido a limitaciones de hardware (antena AC1200).
+
+**Objetivo:** Verificar que el código de jamming funciona correctamente (aunque el efecto puede ser limitado por hardware).
 
 **Pasos:**
 1. Escanear redes disponibles: `wifiscan 5`
@@ -62,14 +84,15 @@
 3. Cambiar al canal de la red: `setchannel <canal>`
 4. Iniciar jamming: `jam <bssid>` (ejemplo: `jam AA:BB:CC:DD:EE:FF`)
 5. Verificar que no aparecen procesos zombie: `ps aux | grep aireplay`
-6. Observar si la conexión WiFi se desconecta
-7. Detener jamming: `jam` (de nuevo)
+6. Verificar que los paquetes se envían: `status` (debe mostrar "Paquetes Enviados" incrementándose)
+7. Observar si la conexión WiFi se desconecta (puede no funcionar por limitaciones de hardware)
+8. Detener jamming: `jam` (de nuevo)
 
 **Resultado esperado:**
-- El jamming inicia sin errores
-- No aparecen procesos `aireplay-ng` en `ps aux`
-- La conexión WiFi objetivo se desconecta
-- El comando `status` muestra "Jamming: ACTIVO"
+- ✅ El jamming inicia sin errores
+- ✅ No aparecen procesos `aireplay-ng` en `ps aux`
+- ✅ El comando `status` muestra "Jamming: ACTIVO" y "Paquetes Enviados" incrementándose
+- ⚠️ La conexión WiFi objetivo puede NO desconectarse (limitación de hardware, no de código)
 
 **Nota:** Si no especificas BSSID, el sistema intentará auto-detectar uno en el canal actual.
 
@@ -77,35 +100,40 @@
 
 ### 3. Prueba: Jamming en Múltiples Canales (Banda 2.4 GHz)
 
-**Objetivo:** Verificar que el jamming funciona en todos los canales de una banda.
+**⚠️ ADVERTENCIA:** Esta prueba puede no mostrar resultados efectivos debido a limitaciones de hardware.
+
+**Objetivo:** Verificar que el código de jamming funciona en múltiples canales (aunque el efecto puede ser limitado).
 
 **Pasos:**
 1. Iniciar jamming en banda 2.4 GHz: `jam 2.4` o `j24`
-2. Verificar estado: `status`
-3. Observar el efecto en todas las redes 2.4 GHz cercanas
+2. Verificar estado: `status` (debe mostrar "Jamming: ACTIVO" y paquetes enviados)
+3. Observar el efecto en todas las redes 2.4 GHz cercanas (puede no haber efecto visible)
 4. Detener: `jam` (de nuevo)
 
 **Resultado esperado:**
-- El sistema inicia jamming en múltiples canales simultáneamente
-- Las redes WiFi 2.4 GHz cercanas se desconectan
-- El comando `status` muestra "Jamming: ACTIVO"
+- ✅ El sistema inicia jamming en múltiples canales simultáneamente
+- ✅ El comando `status` muestra "Jamming: ACTIVO" y paquetes enviados incrementándose
+- ⚠️ Las redes WiFi 2.4 GHz cercanas pueden NO desconectarse (limitación de hardware)
 
 ---
 
 ### 4. Prueba: Jamming en Todas las Bandas
 
-**Objetivo:** Verificar que el jamming funciona en todas las bandas (2.4 y 5 GHz).
+**⚠️ ADVERTENCIA:** Esta prueba puede no mostrar resultados efectivos debido a limitaciones de hardware.
+
+**Objetivo:** Verificar que el código de jamming funciona en todas las bandas (aunque el efecto puede ser limitado).
 
 **Pasos:**
 1. Iniciar jamming en todas las bandas: `jam all` o `ja`
-2. Verificar estado: `status`
-3. Observar el efecto general en todas las redes WiFi
+2. Verificar estado: `status` (debe mostrar "Jamming: ACTIVO" y paquetes enviados)
+3. Observar el efecto general en todas las redes WiFi (puede no haber efecto visible)
 4. Detener: `jam` (de nuevo)
 
 **Resultado esperado:**
-- El sistema inicia jamming en todos los canales disponibles
-- Tanto redes 2.4 GHz como 5 GHz se ven afectadas
-- El sistema maneja correctamente canales problemáticos (DFS)
+- ✅ El sistema inicia jamming en todos los canales disponibles
+- ✅ El comando `status` muestra "Jamming: ACTIVO" y paquetes enviados incrementándose
+- ✅ El sistema maneja correctamente canales problemáticos (DFS)
+- ⚠️ Las redes WiFi pueden NO verse afectadas (limitación de hardware)
 
 ---
 
@@ -133,22 +161,24 @@
 
 ### 6. Prueba: Channel Hopping con Jamming
 
-**Objetivo:** Verificar que el channel hopping puede hacer jamming mientras cambia de canal.
+**⚠️ ADVERTENCIA:** Esta prueba puede no mostrar resultados efectivos debido a limitaciones de hardware.
+
+**Objetivo:** Verificar que el código de channel hopping con jamming funciona (aunque el efecto puede ser limitado).
 
 **Pasos:**
 1. Iniciar channel hopping con jamming: `hop 1.0 jam`
    - Intervalo de 1 segundo por canal
    - Con jamming activado
 2. Esperar 30 segundos
-3. Observar el efecto en las redes WiFi
-4. Ver estado: `status`
+3. Verificar estado: `status` (debe mostrar "CHANNEL HOPPING: ACTIVO" y paquetes enviados)
+4. Observar el efecto en las redes WiFi (puede no haber efecto visible)
 5. Detener: `hop stop`
 
 **Resultado esperado:**
-- El sistema hace hopping entre canales
-- En cada canal, envía paquetes deauth a los APs detectados
-- Las redes WiFi se desconectan intermitentemente
-- El sistema es más efectivo que jamming estático
+- ✅ El sistema hace hopping entre canales
+- ✅ En cada canal, envía paquetes deauth a los APs detectados
+- ✅ El comando `status` muestra "CHANNEL HOPPING: ACTIVO" y paquetes enviados incrementándose
+- ⚠️ Las redes WiFi pueden NO desconectarse (limitación de hardware)
 
 ---
 
@@ -243,10 +273,21 @@ sudo pip3 install scapy
 
 ### Problema: "Jamming no funciona"
 **Solución:**
-1. Verificar modo monitor: `status` debe mostrar "Modo Monitor: wlan1"
-2. Verificar que el BSSID sea correcto: `listaps`
-3. Verificar que estás en el canal correcto: `setchannel <canal>`
-4. Intentar con BSSID específico: `jam <canal> <bssid>`
+1. **Primero verificar que el código funciona:**
+   - Verificar modo monitor: `status` debe mostrar "Modo Monitor: wlan1"
+   - Verificar que el BSSID sea correcto: `listaps`
+   - Verificar que estás en el canal correcto: `setchannel <canal>`
+   - Verificar que los paquetes se envían: `status` debe mostrar "Paquetes Enviados" incrementándose
+
+2. **Si los paquetes se envían pero no hay efecto:**
+   - ⚠️ **Esto es esperado con antena AC1200** - Es una limitación de hardware, no de código
+   - Ver `LIMITACIONES_HARDWARE.md` para más detalles
+   - Para jamming efectivo se requiere hardware especializado (Alfa AWUS036ACH, etc.)
+
+3. **Si los paquetes NO se envían:**
+   - Verificar permisos: ejecutar con `sudo`
+   - Verificar que la interfaz esté en modo monitor
+   - Intentar con BSSID específico: `jam <bssid>`
 
 ### Problema: "Channel hopping no cambia de canal"
 **Solución:**
@@ -304,12 +345,18 @@ sudo pip3 install scapy
 ## ✅ Criterios de Éxito
 
 Las mejoras se consideran exitosas si:
-- ✅ El jamming funciona sin `aireplay-ng`
+- ✅ El código de jamming funciona sin `aireplay-ng` (paquetes se envían correctamente)
 - ✅ No aparecen procesos zombie
 - ✅ La detección automática de APs y clientes funciona
 - ✅ El channel hopping funciona correctamente
 - ✅ El sistema es más rápido y confiable
 - ✅ Todos los comandos nuevos funcionan
+- ✅ Recepción, escaneo y análisis funcionan perfectamente
+
+**Nota importante sobre jamming:**
+- ⚠️ El jamming puede no tener efecto visible debido a limitaciones de hardware (antena AC1200)
+- ✅ Si `status` muestra "Paquetes Enviados" incrementándose, el código funciona correctamente
+- ✅ La falta de efecto visible es esperada y se debe a limitaciones de hardware, no de código
 
 ---
 

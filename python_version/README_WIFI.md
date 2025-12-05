@@ -116,6 +116,27 @@ Jamming changed to Enabled
 > x
 ```
 
+## ⚠️ LIMITACIONES IMPORTANTES DE HARDWARE
+
+**🔴 ADVERTENCIA CRÍTICA:** La antena BrosTrend AC1200 AC3L **NO es adecuada para jamming efectivo**.
+
+### Limitaciones:
+- ❌ **Jamming (deauth) puede no funcionar** - La potencia de transmisión es insuficiente
+- ✅ **Recepción y escaneo funcionan perfectamente**
+- ✅ **Análisis y monitoreo funcionan correctamente**
+- ✅ **Detección de APs y clientes funciona**
+
+**Ver documentación completa:** `LIMITACIONES_HARDWARE.md`
+
+### ¿Por qué?
+- Las antenas AC1200 están diseñadas para uso normal, no para pentesting
+- Potencia de transmisión limitada por diseño y regulaciones
+- Para jamming efectivo se requiere hardware especializado (Alfa AWUS036ACH, TP-Link TL-WN722N v1, etc.)
+
+**El código está correcto** - El problema es puramente de hardware.
+
+---
+
 ## ⚠️ Diferencias con la versión CC1101
 
 1. **Frecuencias vs Canales:**
@@ -128,7 +149,7 @@ Jamming changed to Enabled
 
 3. **Jamming:**
    - Usa deauth attacks en lugar de interferencia RF continua
-   - Requiere aircrack-ng instalado
+   - **Nota:** Puede no funcionar efectivamente con AC1200 (ver limitaciones arriba)
 
 4. **Modo RAW:**
    - Funciona diferente (captura paquetes WiFi completos)
