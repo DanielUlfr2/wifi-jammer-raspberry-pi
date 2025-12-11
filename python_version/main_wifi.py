@@ -178,9 +178,10 @@ class WiFiTerminal:
         """Muestra menú interactivo simplificado con submenús"""
         if submenu is None:
             # Menú principal simplificado
-            menu_text = """
+            import config_wifi
+            menu_text = f"""
 ╔══════════════════════════════════════════════════════════════╗
-║              WiFi Jammer Tool - Menú Principal               ║
+║         WiFi Jammer Tool - Menú Principal v{config_wifi.VERSION}        ║
 ╚══════════════════════════════════════════════════════════════╝
 
    1. 📡 Configuración y Estado

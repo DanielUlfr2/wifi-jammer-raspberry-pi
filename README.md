@@ -915,6 +915,7 @@ Para problemas o preguntas:
 
 ---
 
+**Versión:** 2.0.0  
 **Última actualización:** Diciembre 2024  
 **Mejoras nRFBox:** Implementadas (Diciembre 2024)
 
