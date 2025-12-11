@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 WiFi Interactive Terminal Tool - Versión Mejorada
-Adaptado para usar adaptador WiFi BrosTrend AC1200 AC3L
+Adaptado para usar adaptador WiFi TP-Link TL-WN722N
 Con mejoras de interfaz, performance y funcionalidades adicionales
+NOTA: TP-Link TL-WN722N solo soporta 2.4 GHz (no 5 GHz)
 """
 
 import sys
@@ -28,7 +29,7 @@ import config_wifi as config
 import utils
 from wifi_driver import WiFiDriver, WiFiNetwork, WiFiPacket
 
-# Comandos abreviados
+# Comandos abreviados (mantenidos para compatibilidad, pero menú es preferido)
 COMMAND_ABBREVIATIONS = {
     's': 'scan',
     't': 'tx',
@@ -37,6 +38,7 @@ COMMAND_ABBREVIATIONS = {
     'j24': 'jam 2.4',
     'j5': 'jam 5',
     'ja': 'jam all',
+    'btj': 'btjam',
     'c': 'chat',
     'st': 'status',
     'h': 'help',
@@ -45,6 +47,8 @@ COMMAND_ABBREVIATIONS = {
     'w': 'wifiscan',
     'f': 'filter',
     'e': 'export',
+    '0': 'menu',  # Para mostrar menú
+    'menu': 'menu',
 }
 
 
@@ -170,13 +174,144 @@ class WiFiTerminal:
         self.cleanup()
         sys.exit(0)
     
+    def print_menu(self, submenu=None):
+        """Muestra menú interactivo simplificado con submenús"""
+        if submenu is None:
+            # Menú principal simplificado
+            menu_text = """
+╔══════════════════════════════════════════════════════════════╗
+║              WiFi Jammer Tool - Menú Principal               ║
+╚══════════════════════════════════════════════════════════════╝
+
+   1. 📡 Configuración y Estado
+   2. 🔍 Escanear Redes WiFi
+   3. 📥 Recepción y Transmisión
+   4. 🚫 Jamming (Deauth Attacks)
+   5. 🎙️ Grabación de Paquetes
+   6. 💾 Exportar y Archivos
+   7. ⚙️ Utilidades
+   8. ❌ Salir
+
+═══════════════════════════════════════════════════════════════
+
+Selecciona una opción (1-8): """
+        elif submenu == "config":
+            menu_text = """
+╔══════════════════════════════════════════════════════════════╗
+║              📡 Configuración y Estado                       ║
+╚══════════════════════════════════════════════════════════════╝
+
+   1. Cambiar canal WiFi
+   2. Mostrar estado del sistema
+   3. Mostrar RSSI actual
+   4. ← Volver al menú principal
+
+═══════════════════════════════════════════════════════════════
+
+Selecciona una opción (1-4): """
+        elif submenu == "scan":
+            menu_text = """
+╔══════════════════════════════════════════════════════════════╗
+║              🔍 Escanear Redes WiFi                          ║
+╚══════════════════════════════════════════════════════════════╝
+
+   1. Escanear redes WiFi (rápido)
+   2. Escanear rango de canales
+   3. Listar APs detectados
+   4. Listar clientes detectados
+   5. Channel hopping automático
+   6. ← Volver al menú principal
+
+═══════════════════════════════════════════════════════════════
+
+Selecciona una opción (1-6): """
+        elif submenu == "txrx":
+            menu_text = """
+╔══════════════════════════════════════════════════════════════╗
+║              📥 Recepción y Transmisión                      ║
+╚══════════════════════════════════════════════════════════════╝
+
+   1. Activar/Desactivar recepción de paquetes
+   2. Enviar paquete WiFi personalizado
+   3. Modo chat
+   4. ← Volver al menú principal
+
+═══════════════════════════════════════════════════════════════
+
+Selecciona una opción (1-4): """
+        elif submenu == "jamming":
+            menu_text = """
+╔══════════════════════════════════════════════════════════════╗
+║              🚫 Jamming (Deauth Attacks)                     ║
+╚══════════════════════════════════════════════════════════════╝
+
+   1. Jamming WiFi (canal actual)
+   2. Jamming WiFi (canal específico)
+   3. Jamming WiFi (todos los canales 2.4 GHz)
+   4. Jamming Bluetooth
+   5. Detener jamming activo
+   6. ← Volver al menú principal
+
+═══════════════════════════════════════════════════════════════
+
+Selecciona una opción (1-6): """
+        elif submenu == "recording":
+            menu_text = """
+╔══════════════════════════════════════════════════════════════╗
+║              🎙️ Grabación de Paquetes                        ║
+╚══════════════════════════════════════════════════════════════╝
+
+   1. Activar/Desactivar grabación
+   2. Mostrar paquetes grabados
+   3. Reproducir paquetes grabados
+   4. Limpiar buffer de grabación
+   5. ← Volver al menú principal
+
+═══════════════════════════════════════════════════════════════
+
+Selecciona una opción (1-5): """
+        elif submenu == "files":
+            menu_text = """
+╔══════════════════════════════════════════════════════════════╗
+║              💾 Exportar y Archivos                          ║
+╚══════════════════════════════════════════════════════════════╝
+
+   1. Exportar paquetes a PCAP (Wireshark)
+   2. Guardar buffer
+   3. Cargar buffer
+   4. ← Volver al menú principal
+
+═══════════════════════════════════════════════════════════════
+
+Selecciona una opción (1-4): """
+        elif submenu == "utils":
+            menu_text = """
+╔══════════════════════════════════════════════════════════════╗
+║              ⚙️ Utilidades                                   ║
+╚══════════════════════════════════════════════════════════════╝
+
+   1. Configurar filtros
+   2. Ver filtros activos
+   3. Reinicializar adaptador
+   4. Detener todas las operaciones
+   5. Ayuda completa
+   6. ← Volver al menú principal
+
+═══════════════════════════════════════════════════════════════
+
+Selecciona una opción (1-6): """
+        else:
+            menu_text = self.print_menu(None)
+        
+        return menu_text
+    
     def print_help(self):
         """Muestra la ayuda de comandos mejorada"""
         help_text = """
 COMANDOS BÁSICOS:
 =================
-setchannel <channel>  : Cambiar canal WiFi (2.4GHz: 1-14, 5GHz: 36-165)
-setband <band>        : Cambiar banda ("2.4" o "5")
+setchannel <channel>  : Cambiar canal WiFi (2.4GHz: 1-14) [TL-WN722N solo 2.4 GHz]
+setband <band>        : Cambiar banda ("2.4" únicamente) [TL-WN722N no soporta 5 GHz]
 getrssi               : Mostrar RSSI del último paquete
 status                : Mostrar estado y estadísticas actuales
 
@@ -196,13 +331,13 @@ jam [opciones]        : Activar/desactivar jamming WiFi
                        - jam: Canal actual
                        - jam <canal>: Canal específico (ej: jam 6)
                        - jam 2.4: Todos los canales 2.4 GHz (1-14)
-                       - jam 5: Todos los canales 5 GHz (36-165)
-                       - jam all: Todos los canales (2.4 y 5 GHz)
+                       - jam 5: [NO DISPONIBLE] TL-WN722N no soporta 5 GHz
+                       - jam all: Todos los canales 2.4 GHz (1-14) [TL-WN722N solo 2.4 GHz]
                        - jam <bssid>: Red específica en canal actual
-                       - jam <canal> <bssid>: Red específica en canal
+                       - jam <canal> <bssid>: Red específica en canal (solo 1-14)
                        - jam 2.4 <bssid>: Red en todos los canales 2.4 GHz
-                       - jam 5 <bssid>: Red en todos los canales 5 GHz
-                       - jam all <bssid>: Red en todos los canales
+                       - jam 5 <bssid>: [NO DISPONIBLE] TL-WN722N no soporta 5 GHz
+                       - jam all <bssid>: Red en todos los canales 2.4 GHz (1-14)
 chat                  : Modo chat (envío/recepción de texto)
 
 GRABACIÓN:
@@ -244,10 +379,11 @@ help                  : Mostrar esta ayuda
 
 COMANDOS ABREVIADOS:
 ====================
-s, t, r, j, j24, j5, ja, c, st, h, q, x, w, f, e
+s, t, r, j, j24, j5, ja, btj, c, st, h, q, x, w, f, e
   - j24: jam 2.4 (banda 2.4 GHz)
-  - j5: jam 5 (banda 5 GHz)
-  - ja: jam all (todas las bandas)
+  - j5: jam 5 [NO DISPONIBLE - TL-WN722N no soporta 5 GHz]
+  - ja: jam all (solo 2.4 GHz con TL-WN722N)
+  - btj: btjam (jamming Bluetooth)
 
 NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamente.
 """
@@ -341,8 +477,10 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
                 args = str(channel)
                 print(f"NOTA: Frecuencia {freq} MHz mapeada a canal WiFi {channel}\r\n")
             
-            if command == "help" or command == "h":
-                self.print_help()
+            if command == "help" or command == "h" or command == "menu" or command == "0":
+                # Mostrar menú en lugar de help
+                print(self.print_menu(), end='', flush=True)
+                return  # No procesar más, solo mostrar menú
             
             elif command == "status" or command == "st":
                 self._cmd_status()
@@ -355,15 +493,17 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
                     if self.wifi.set_channel(channel):
                         print(f"\r\n{self._format_channel_with_freq(channel)}\r\n")
                     else:
-                        print("Error: Canal inválido. Use 1-14 para 2.4GHz o 36-165 para 5GHz\r\n")
+                        print("Error: Canal inválido. TL-WN722N solo soporta canales 1-14 (2.4 GHz)\r\n")
             
             elif command == "setband":
                 band = args.strip()
-                if band in ["2.4", "5"]:
+                if band == "2.4":
                     self.wifi.current_band = band
                     print(f"\r\nWiFi Band: {band} GHz\r\n")
+                elif band == "5":
+                    print("Error: TL-WN722N no soporta 5 GHz. Solo disponible banda 2.4 GHz.\r\n")
                 else:
-                    print("Error: Banda debe ser '2.4' o '5'\r\n")
+                    print("Error: Banda debe ser '2.4'. TL-WN722N no soporta 5 GHz.\r\n")
             
             elif command == "getrssi":
                 rssi = self.wifi.get_rssi()
@@ -407,6 +547,53 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
                         print("Error enviando paquete.\r\n")
                 else:
                     print("Error: Cadena hexadecimal inválida.\r\n")
+            
+            elif command == "btjam" or command == "btj":
+                # Jamming Bluetooth
+                if hasattr(self.wifi, 'bt_jamming_active') and self.wifi.bt_jamming_active:
+                    self.wifi.stop_bluetooth_jamming()
+                    print("\r\nJamming Bluetooth: DESACTIVADO\r\n")
+                else:
+                    if not self.wifi.monitor_mode:
+                        self.wifi.set_monitor_mode(True)
+                    
+                    # Parsear argumentos
+                    hop_enabled = True
+                    target_channels = None
+                    
+                    if args:
+                        args_lower = args.strip().lower()
+                        parts = args.strip().split()
+                        
+                        if args_lower in ['nohop', 'no-hop', 'single']:
+                            hop_enabled = False
+                        elif parts[0].isdigit():
+                            # Canal específico
+                            channel = int(parts[0])
+                            if 0 <= channel <= 78:
+                                hop_enabled = False
+                                target_channels = [channel]
+                        elif ',' in args:
+                            # Lista de canales separados por comas
+                            try:
+                                channels = [int(c.strip()) for c in args.split(',')]
+                                target_channels = [c for c in channels if 0 <= c <= 78]
+                                if target_channels:
+                                    hop_enabled = True
+                            except ValueError:
+                                pass
+                    
+                    success = self.wifi.start_bluetooth_jamming(
+                        hop_enabled=hop_enabled,
+                        target_channels=target_channels
+                    )
+                    
+                    if success:
+                        mode_desc = "Frequency Hopping" if hop_enabled else "Canal único"
+                        channels_desc = f"{len(target_channels)} canales" if target_channels else "todos los canales"
+                        print(f"\r\nJamming Bluetooth: ACTIVADO ({mode_desc}, {channels_desc})\r\n")
+                    else:
+                        print("\r\nError activando jamming Bluetooth.\r\n")
             
             elif command == "jam" or command == "j":
                 if self.jamming_mode:
@@ -597,6 +784,8 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
                 self.rxraw_active = False
                 self.scan_active = False
                 self.wifi.stop_jamming()
+                if hasattr(self.wifi, 'stop_bluetooth_jamming'):
+                    self.wifi.stop_bluetooth_jamming()
                 print("\r\nTodas las operaciones detenidas.\r\n")
             
             elif command == "init":
@@ -701,7 +890,9 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
         print()
         print("=== MODOS ACTIVOS ===")
         print(f"Recepción: {'ACTIVA' if self.receiving_mode else 'inactiva'}")
-        print(f"Jamming: {'ACTIVO' if self.jamming_mode else 'inactivo'}")
+        print(f"Jamming WiFi: {'ACTIVO' if self.jamming_mode else 'inactivo'}")
+        bt_jam_active = hasattr(self.wifi, 'bt_jamming_active') and self.wifi.bt_jamming_active
+        print(f"Jamming Bluetooth: {'ACTIVO' if bt_jam_active else 'inactivo'}")
         print(f"Grabación: {'ACTIVA' if self.recording_mode else 'inactiva'}")
         print(f"Chat: {'ACTIVO' if self.chat_mode else 'inactivo'}")
         print()
@@ -845,9 +1036,10 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
         if results:
             print(f"\r\nResumen: {len(results)} canales con señal encontrados.\r\n")
             for result in results:
-                if len(result) == 4:
-                    channel, rssi, freq_mhz, band = result
-                    print(f"  Canal {channel} ({freq_mhz} MHz, {band}): {rssi} dBm\r\n")
+                if len(result) == 2:
+                    channel, rssi = result
+                    channel_str = self._format_channel_with_freq(channel)
+                    print(f"  {channel_str}: {rssi} dBm\r\n")
                 else:
                     channel, rssi = result
                     print(f"  Canal {channel}: {rssi} dBm\r\n")
@@ -1192,13 +1384,13 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
             pass
     
     def run(self):
-        """Bucle principal mejorado"""
-        print("WiFi Terminal Tool - Versión Mejorada")
-        print("Adaptado para WiFi - BrosTrend AC1200 AC3L\n\r")
-        print("Use 'help' para lista de comandos o 'status' para estado actual.\n\r")
-        print()
+        """Bucle principal con menú interactivo sencillo"""
+        print("\n╔══════════════════════════════════════════════════════════════╗")
+        print("║      WiFi Terminal Tool - TP-Link TL-WN722N                  ║")
+        print("║      Versión Optimizada para Raspberry Pi 4                  ║")
+        print("╚══════════════════════════════════════════════════════════════╝\n")
         
-        # Usar threading para entrada de comandos (más robusto)
+        # Usar threading para entrada de comandos
         import threading
         
         self.input_queue = queue.Queue()
@@ -1208,7 +1400,6 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
             """Thread separado para capturar entrada del usuario"""
             while input_active:
                 try:
-                    # Usar input() normal en thread separado (bloqueante pero funciona mejor)
                     line = input()
                     if line:
                         self.input_queue.put(line)
@@ -1221,6 +1412,12 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
         # Iniciar thread de entrada
         input_thread_obj = threading.Thread(target=input_thread, daemon=True)
         input_thread_obj.start()
+        
+        # Estado del menú (submenú actual)
+        self.current_submenu = None
+        
+        # Mostrar menú principal inicial
+        self._show_menu_and_process()
         
         try:
             while True:
@@ -1239,26 +1436,378 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
                                 if self.do_echo:
                                     print(line, end='', flush=True)
                             else:
-                                # Procesar comando
-                                if self.do_echo:
-                                    print(f">>> {line}\r\n", end='', flush=True)
-                                self.exec_command(line.strip())
+                                # Procesar entrada
+                                if line.strip().isdigit():
+                                    # Es un número del menú
+                                    result = self._handle_menu_choice(int(line.strip()))
+                                    # Si retorna un submenú, actualizar estado
+                                    if isinstance(result, str):
+                                        self.current_submenu = result
+                                    elif result is None:
+                                        self.current_submenu = None
+                                else:
+                                    # Comando directo (compatibilidad)
+                                    self.exec_command(line.strip())
+                                    # Volver al menú principal después de comando directo
+                                    self.current_submenu = None
+                                    
+                                # Mostrar menú después de cada comando
+                                if not self.chat_mode:
+                                    self._show_menu_and_process()
                 except queue.Empty:
                     pass
-                except Exception as e:
+                except ValueError:
+                    # No es un número, tratar como comando
+                    try:
+                        if line and not line.strip().isdigit():
+                            self.exec_command(line.strip())
+                            if not self.chat_mode:
+                                self._show_menu_and_process()
+                    except:
+                        pass
+                except Exception:
                     pass
                 
                 # Procesar WiFi
                 self.process_wifi()
                 
-                # Pequeña pausa para no saturar CPU
-                time.sleep(0.01)
+                # Pausa optimizada según hardware
+                import config_wifi as config
+                if getattr(config, 'OPTIMIZE_FOR_RPI', False):
+                    time.sleep(0.005)
+                else:
+                    time.sleep(0.01)
         
         except KeyboardInterrupt:
             print("\n\r\nInterrupción detectada. Limpiando...")
         finally:
             input_active = False
             self.cleanup()
+    
+    def _show_menu_and_process(self):
+        """Muestra el menú y espera selección"""
+        print(self.print_menu(self.current_submenu), end='', flush=True)
+    
+    def _handle_menu_choice(self, choice: int):
+        """Maneja la selección del menú"""
+        print()  # Nueva línea después de la selección
+        
+        try:
+            if choice == 1:
+                # Cambiar canal WiFi
+                try:
+                    canal = input("Ingresa el canal WiFi (1-14): ").strip()
+                    if canal:
+                        channel = int(canal)
+                        if self.wifi.set_channel(channel):
+                            print(f"\n✓ Canal cambiado a {channel}\n")
+                        else:
+                            print("\n✗ Error: Canal inválido\n")
+                except ValueError:
+                    print("\n✗ Error: Ingresa un número válido\n")
+            
+            elif choice == 2:
+                # Mostrar estado
+                self._cmd_status()
+            
+            elif choice == 3:
+                # Mostrar RSSI
+                rssi = self.wifi.get_rssi()
+                print(f"\nRSSI actual: {rssi} dBm\n")
+            
+            elif choice == 4:
+                # Escanear redes WiFi
+                try:
+                    duration = input("Duración del escaneo en segundos (Enter para 3s): ").strip()
+                    duration = float(duration) if duration else 3.0
+                    self._cmd_wifiscan(duration)
+                except ValueError:
+                    print("\n✗ Error: Ingresa un número válido\n")
+            
+            elif choice == 5:
+                # Escanear rango de canales
+                try:
+                    start = input("Canal inicial (1-14): ").strip()
+                    end = input("Canal final (1-14): ").strip()
+                    if start and end:
+                        self._cmd_scan_wifi(int(start), int(end))
+                    else:
+                        print("\n✗ Error: Ingresa ambos valores\n")
+                except ValueError:
+                    print("\n✗ Error: Ingresa números válidos\n")
+            
+            elif choice == 6:
+                # Listar APs
+                with self.wifi.clients_APs_lock:
+                    if len(self.wifi.APs) > 0:
+                        print("\n=== APs DETECTADOS ===\n")
+                        print(f"{'BSSID':<18} {'Canal':<8} {'SSID':<30}\n")
+                        print("-" * 60 + "\n")
+                        for ap in self.wifi.APs:
+                            bssid = ap[0] if len(ap) > 0 else "Unknown"
+                            channel = ap[1] if len(ap) > 1 else "?"
+                            ssid = ap[2] if len(ap) > 2 else "<hidden>"
+                            print(f"{bssid:<18} {channel:<8} {ssid:<30}\n")
+                        print(f"\nTotal: {len(self.wifi.APs)} APs\n")
+                    else:
+                        print("\nNo se han detectado APs aún. Usa la opción 9 (rx) o 4 (wifiscan) para detectar redes.\n")
+            
+            elif choice == 7:
+                # Listar clientes
+                with self.wifi.clients_APs_lock:
+                    if len(self.wifi.clients_APs) > 0:
+                        print("\n=== CLIENTES-APs DETECTADOS ===\n")
+                        print(f"{'Cliente':<18} {'AP':<18} {'Canal':<8} {'SSID':<30}\n")
+                        print("-" * 80 + "\n")
+                        for ca in self.wifi.clients_APs:
+                            client = ca[0] if len(ca) > 0 else "Unknown"
+                            ap = ca[1] if len(ca) > 1 else "Unknown"
+                            channel = ca[2] if len(ca) > 2 else "?"
+                            ssid = ca[3] if len(ca) > 3 else ""
+                            print(f"{client:<18} {ap:<18} {channel:<8} {ssid:<30}\n")
+                        print(f"\nTotal: {len(self.wifi.clients_APs)} pares cliente-AP\n")
+                    else:
+                        print("\nNo se han detectado clientes aún. Usa la opción 9 (rx) para capturar tráfico.\n")
+            
+            elif choice == 8:
+                # Channel hopping
+                try:
+                    interval = input("Intervalo en segundos (Enter para 1.0s): ").strip()
+                    interval = float(interval) if interval else 1.0
+                    jam_opt = input("¿Activar jamming durante hopping? (s/n, Enter para no): ").strip().lower()
+                    enable_jam = jam_opt in ['s', 'si', 'sí', 'y', 'yes']
+                    self.wifi.start_channel_hopping(hop_interval=interval, enable_jamming=enable_jam)
+                    print(f"\n✓ Channel hopping iniciado (intervalo: {interval}s, jamming: {'SÍ' if enable_jam else 'NO'})\n")
+                except ValueError:
+                    print("\n✗ Error: Ingresa un número válido\n")
+            
+            elif choice == 9:
+                # Activar/Desactivar recepción
+                if self.receiving_mode:
+                    self.receiving_mode = False
+                    print("\n✓ Recepción: DESACTIVADA\n")
+                else:
+                    if not self.wifi.monitor_mode:
+                        self.wifi.set_monitor_mode(True)
+                    self.receiving_mode = True
+                    self.jamming_mode = False
+                    self.recording_mode = False
+                    print("\n✓ Recepción: ACTIVADA\n")
+            
+            elif choice == 10:
+                # Enviar paquete personalizado
+                try:
+                    hex_data = input("Ingresa datos en hexadecimal (ej: AABBCCDD): ").strip()
+                    if hex_data and utils.validate_hex_string(hex_data):
+                        data = utils.hex_to_bytes(hex_data)
+                        if self.wifi.send_packet(data):
+                            print(f"\n✓ Paquete enviado: {hex_data}\n")
+                        else:
+                            print("\n✗ Error enviando paquete\n")
+                    else:
+                        print("\n✗ Error: Cadena hexadecimal inválida\n")
+                except Exception as e:
+                    print(f"\n✗ Error: {e}\n")
+            
+            elif choice == 11:
+                # Jamming WiFi canal actual
+                if self.jamming_mode:
+                    self.jamming_mode = False
+                    self.wifi.stop_jamming()
+                    print("\n✓ Jamming WiFi: DESACTIVADO\n")
+                else:
+                    self.jamming_mode = True
+                    self.receiving_mode = False
+                    if not self.wifi.monitor_mode:
+                        self.wifi.set_monitor_mode(True)
+                    if self.wifi.start_jamming(jam_mode="channel"):
+                        print("\n✓ Jamming WiFi: ACTIVADO (canal actual)\n")
+                    else:
+                        self.jamming_mode = False
+                        print("\n✗ Error activando jamming\n")
+            
+            elif choice == 12:
+                # Jamming WiFi canal específico
+                try:
+                    canal = input("Ingresa el canal WiFi (1-14): ").strip()
+                    if canal:
+                        channel = int(canal)
+                        bssid = input("BSSID objetivo (Enter para auto-detectar): ").strip()
+                        bssid = bssid if bssid else None
+                        
+                        self.jamming_mode = True
+                        self.receiving_mode = False
+                        if not self.wifi.monitor_mode:
+                            self.wifi.set_monitor_mode(True)
+                        
+                        if self.wifi.start_jamming(target_bssid=bssid, channel=channel, jam_mode="channel"):
+                            print(f"\n✓ Jamming WiFi: ACTIVADO (canal {channel})\n")
+                        else:
+                            self.jamming_mode = False
+                            print("\n✗ Error activando jamming\n")
+                except ValueError:
+                    print("\n✗ Error: Ingresa un número válido\n")
+            
+            elif choice == 13:
+                # Jamming WiFi todos los canales 2.4 GHz
+                if self.jamming_mode:
+                    self.jamming_mode = False
+                    self.wifi.stop_jamming()
+                    print("\n✓ Jamming WiFi: DESACTIVADO\n")
+                else:
+                    bssid = input("BSSID objetivo (Enter para broadcast): ").strip()
+                    bssid = bssid if bssid else None
+                    
+                    self.jamming_mode = True
+                    self.receiving_mode = False
+                    if not self.wifi.monitor_mode:
+                        self.wifi.set_monitor_mode(True)
+                    
+                    if self.wifi.start_jamming(target_bssid=bssid, jam_mode="band_2_4"):
+                        print("\n✓ Jamming WiFi: ACTIVADO (todos los canales 2.4 GHz)\n")
+                    else:
+                        self.jamming_mode = False
+                        print("\n✗ Error activando jamming\n")
+            
+            elif choice == 14:
+                # Jamming Bluetooth
+                if hasattr(self.wifi, 'bt_jamming_active') and self.wifi.bt_jamming_active:
+                    self.wifi.stop_bluetooth_jamming()
+                    print("\n✓ Jamming Bluetooth: DESACTIVADO\n")
+                else:
+                    if not self.wifi.monitor_mode:
+                        self.wifi.set_monitor_mode(True)
+                    
+                    canal_opt = input("¿Canal específico? (Ingresa número 0-78 o Enter para todos): ").strip()
+                    if canal_opt:
+                        try:
+                            bt_channel = int(canal_opt)
+                            if 0 <= bt_channel <= 78:
+                                if self.wifi.start_bluetooth_jamming(hop_enabled=False, target_channels=[bt_channel]):
+                                    print(f"\n✓ Jamming Bluetooth: ACTIVADO (canal {bt_channel})\n")
+                                else:
+                                    print("\n✗ Error activando jamming Bluetooth\n")
+                            else:
+                                print("\n✗ Error: Canal debe estar entre 0 y 78\n")
+                        except ValueError:
+                            print("\n✗ Error: Ingresa un número válido\n")
+                    else:
+                        if self.wifi.start_bluetooth_jamming(hop_enabled=True):
+                            print("\n✓ Jamming Bluetooth: ACTIVADO (frequency hopping)\n")
+                        else:
+                            print("\n✗ Error activando jamming Bluetooth\n")
+            
+            elif choice == 15:
+                # Modo chat
+                if self.chat_mode:
+                    self.chat_mode = False
+                    print("\n✓ Modo chat: DESACTIVADO\n")
+                else:
+                    self.chat_mode = True
+                    self.jamming_mode = False
+                    self.receiving_mode = False
+                    self.recording_mode = False
+                    print("\n✓ Modo chat: ACTIVADO\nEscribe mensajes directamente (Enter para enviar)\n")
+            
+            elif choice == 16:
+                # Activar/Desactivar grabación
+                if self.recording_mode:
+                    self.recording_mode = False
+                    self.big_recording_buffer_pos = 0
+                    print(f"\n✓ Grabación: DESACTIVADA ({self.frames_in_buffer} frames almacenados)\n")
+                else:
+                    if not self.wifi.monitor_mode:
+                        self.wifi.set_monitor_mode(True)
+                    self.recording_mode = True
+                    self.jamming_mode = False
+                    self.receiving_mode = False
+                    self.big_recording_buffer_pos = 0
+                    self.frames_in_buffer = 0
+                    self.big_recording_buffer = bytearray(config.RECORDINGBUFFERSIZE)
+                    print("\n✓ Grabación: ACTIVADA\n")
+            
+            elif choice == 17:
+                # Mostrar paquetes grabados
+                self._cmd_show()
+            
+            elif choice == 18:
+                # Reproducir paquetes
+                try:
+                    frame_num = input("Número de frame (0 para todos, Enter para 0): ").strip()
+                    frame_num = int(frame_num) if frame_num else 0
+                    self._cmd_play(frame_num)
+                except ValueError:
+                    print("\n✗ Error: Ingresa un número válido\n")
+            
+            elif choice == 19:
+                # Limpiar buffer
+                self.big_recording_buffer = bytearray(config.RECORDINGBUFFERSIZE)
+                self.big_recording_buffer_pos = 0
+                self.frames_in_buffer = 0
+                print("\n✓ Buffer de grabación limpiado\n")
+            
+            elif choice == 20:
+                # Exportar PCAP
+                filename = input("Nombre del archivo (Enter para nombre automático): ").strip()
+                if not filename:
+                    filename = f"wifi_capture_{int(time.time())}.pcap"
+                self._cmd_export_pcap(filename)
+            
+            elif choice == 21:
+                # Guardar buffer
+                self._cmd_save()
+            
+            elif choice == 22:
+                # Cargar buffer
+                self._cmd_load()
+            
+            elif choice == 23:
+                # Configurar filtros
+                print("\nTipos de filtro: bssid, ssid, type, clear")
+                filter_input = input("Comando de filtro (ej: 'bssid AA:BB:CC:DD:EE:FF'): ").strip()
+                if filter_input:
+                    self._cmd_filter(filter_input)
+            
+            elif choice == 24:
+                # Ver filtros activos
+                self._cmd_filter("")
+            
+            elif choice == 25:
+                # Reinicializar adaptador
+                if not self.wifi.monitor_mode:
+                    self.wifi.set_monitor_mode(True)
+                self.wifi.set_channel(config.DEFAULT_CHANNEL)
+                print("\n✓ Adaptador WiFi reinicializado\n")
+            
+            elif choice == 26:
+                # Detener todas las operaciones
+                self.receiving_mode = False
+                self.jamming_mode = False
+                self.recording_mode = False
+                self.rxraw_active = False
+                self.scan_active = False
+                self.wifi.stop_jamming()
+                if hasattr(self.wifi, 'stop_bluetooth_jamming'):
+                    self.wifi.stop_bluetooth_jamming()
+                print("\n✓ Todas las operaciones detenidas\n")
+            
+            elif choice == 27:
+                # Ayuda completa
+                self.print_help()
+            
+            elif choice == 28:
+                # Salir
+                print("\n✓ Saliendo...\n")
+                self.cleanup()
+                sys.exit(0)
+            
+            else:
+                print(f"\n✗ Opción {choice} no válida. Selecciona un número del menú.\n")
+        
+        except KeyboardInterrupt:
+            print("\n\nOperación cancelada.\n")
+        except Exception as e:
+            print(f"\n✗ Error: {e}\n")
 
 
 def main():

@@ -1,5 +1,5 @@
 # Dependencias para WiFi Jammer - Versión WiFi
-# Para Raspberry Pi 4 con adaptador WiFi BrosTrend AC1200 AC3L
+# Para Raspberry Pi 4 con adaptador WiFi TP-Link TL-WN722N
 
 # Captura e inyección de paquetes WiFi
 scapy>=2.4.5

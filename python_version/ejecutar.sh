@@ -1,8 +1,8 @@
 #!/bin/bash
-# Script de ejecución para WiFi Jammer
+# Script de ejecución para WiFi Jammer - TP-Link TL-WN722N
 # Soluciona problemas comunes de permisos y dependencias
 
-echo "=== Preparando WiFi Jammer ==="
+echo "=== Preparando WiFi Jammer (TP-Link TL-WN722N) ==="
 
 # Detener procesos que usan WiFi
 echo "Deteniendo procesos WiFi..."
@@ -25,7 +25,7 @@ if ! python3 -c "import scapy" 2>/dev/null; then
 fi
 
 # Ejecutar programa
-echo "Ejecutando WiFi Jammer..."
+echo "Ejecutando WiFi Jammer (TP-Link TL-WN722N)..."
 echo ""
 sudo python3 main_wifi.py
 

