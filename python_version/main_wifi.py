@@ -1386,9 +1386,10 @@ NOTA: Comandos de CC1101 (setmhz, setmodulation, etc.) se adaptan automáticamen
     
     def run(self):
         """Bucle principal con menú interactivo sencillo"""
+        import config_wifi
         print("\n╔══════════════════════════════════════════════════════════════╗")
-        print("║      WiFi Terminal Tool - TP-Link TL-WN722N                  ║")
-        print("║      Versión Optimizada para Raspberry Pi 4                  ║")
+        print(f"║      WiFi Terminal Tool - TP-Link TL-WN722N v{config_wifi.VERSION}      ║")
+        print("║      Optimizado para Raspberry Pi 4                          ║")
         print("╚══════════════════════════════════════════════════════════════╝\n")
         
         # Usar threading para entrada de comandos
