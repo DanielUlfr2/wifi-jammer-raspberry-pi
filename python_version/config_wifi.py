@@ -5,6 +5,10 @@ Adaptado del proyecto CC1101 para usar WiFi en lugar de RF sub-GHz
 NOTA: TP-Link TL-WN722N solo soporta 2.4 GHz (no 5 GHz)
 """
 
+# Versión del proyecto
+__version__ = "2.0.0"
+VERSION = __version__
+
 # Constantes de buffer
 CCBUFFERSIZE = 64
 RECORDINGBUFFERSIZE = 4096

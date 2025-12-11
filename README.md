@@ -155,6 +155,43 @@ source venv/bin/activate
 pip install -r requirements_wifi.txt
 ```
 
+## 📦 Actualizar el Proyecto
+
+Si ya tienes el proyecto clonado y quieres actualizar a la última versión:
+
+```bash
+# Navegar al directorio del proyecto
+cd wifi-jammer-tl-wn722n
+
+# Si tienes cambios locales que quieres descartar:
+git fetch origin
+git reset --hard origin/main
+
+# O si quieres mantener tus cambios locales y combinar con las actualizaciones:
+git pull origin main
+
+# Si hay conflictos durante el pull, resuélvelos y luego:
+git add .
+git commit -m "Merge con cambios remotos"
+git push origin main
+```
+
+### Actualizar dependencias después de actualizar el código:
+
+```bash
+cd python_version
+pip install -r requirements_wifi.txt --upgrade
+```
+
+### Verificar la versión actual:
+
+```bash
+cd python_version
+python3 -c "import config_wifi; print(f'Versión: {config_wifi.VERSION}')"
+```
+
+---
+
 ## 🚀 Cómo Ejecutar el Proyecto
 
 ### Ejecutar el programa (CON SUDO):
