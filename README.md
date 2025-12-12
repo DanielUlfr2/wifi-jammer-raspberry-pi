@@ -30,9 +30,70 @@ Herramienta avanzada para análisis y pruebas de seguridad WiFi, optimizada para
 - Permisos de administrador (sudo)
 - Controladores rtl8188eu (instrucciones abajo)
 
-## 📦 Instalación
+## 🧹 Limpiar Proyectos de la Raspberry Pi (Instalación desde Cero)
 
-### Paso 1: Instalar dependencias del sistema
+Si necesitas limpiar todos los proyectos y empezar desde cero:
+
+### Opción A: Eliminar solo este proyecto
+
+```bash
+# Eliminar el proyecto actual
+rm -rf ~/wifi-jammer-raspberry-pi
+rm -rf ~/wifi-jammer-tl-wn722n  # Nombre antiguo si existe
+
+# Limpiar dependencias opcionales (si no las usas)
+# pip3 uninstall scapy pyric  # Solo si quieres reinstalar todo
+```
+
+### Opción B: Limpiar todos los proyectos de usuario (mantener sistema operativo)
+
+```bash
+# Eliminar proyectos comunes
+rm -rf ~/wifi-jammer*
+rm -rf ~/rtl8188eus
+
+# Limpiar caché de pip
+pip3 cache purge
+
+# Limpiar espacio (opcional)
+sudo apt autoremove -y
+sudo apt autoclean
+```
+
+### Opción C: Formateo completo (SOLO si quieres reinstalar el SO)
+
+**⚠️ ADVERTENCIA: Esto eliminará TODO el sistema operativo. Solo hazlo si sabes lo que haces.**
+
+1. Haz backup de tus archivos importantes
+2. Usa Raspberry Pi Imager para reinstalar el SO
+3. Sigue las instrucciones de instalación desde cero
+
+---
+
+## 📦 Instalación desde Cero
+
+### Método Rápido: Instalación Automática (RECOMENDADO)
+
+```bash
+# Descargar y ejecutar script de instalación
+cd ~
+wget https://raw.githubusercontent.com/DanielUlfr2/wifi-jammer-raspberry-pi/main/install.sh
+chmod +x install.sh
+sudo bash install.sh
+```
+
+El script instalará automáticamente:
+- ✅ Dependencias del sistema
+- ✅ Controladores rtl8188eu
+- ✅ Clonación del repositorio
+- ✅ Entorno virtual Python
+- ✅ Todas las dependencias necesarias
+
+---
+
+### Método Manual: Instalación Paso a Paso
+
+#### Paso 1: Instalar dependencias del sistema
 
 ```bash
 sudo apt update
@@ -161,7 +222,7 @@ Si ya tienes el proyecto clonado y quieres actualizar a la última versión:
 
 ```bash
 # Navegar al directorio del proyecto
-cd wifi-jammer-tl-wn722n
+cd ~/wifi-jammer-raspberry-pi
 
 # Si tienes cambios locales que quieres descartar:
 git fetch origin
@@ -197,7 +258,13 @@ python3 -c "import config_wifi; print(f'Versión: {config_wifi.VERSION}')"
 ### Ejecutar el programa (CON SUDO):
 
 ```bash
-cd python_version
+# Opción 1: Usando el script de ejecución (recomendado)
+cd ~/wifi-jammer-raspberry-pi/python_version
+sudo bash ejecutar.sh
+
+# Opción 2: Directamente con Python
+cd ~/wifi-jammer-raspberry-pi/python_version
+source venv/bin/activate  # Si usas entorno virtual
 sudo python3 main_wifi.py
 ```
 
